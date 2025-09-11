@@ -1,0 +1,5 @@
+{
+  "appId": "com.mykaskitaapp.app",
+  "appName": "MyKaskita",
+  "webDir": "dist/capacitor"
+}
