@@ -186,6 +186,13 @@ const getToday = () => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
+const options = [
+  { label: '0%', value: 0 },
+  { label: '10%', value: 10 },
+  { label: '11%', value: 11 },
+  { label: '12%', value: 12 },
+]
+
 // ----- KONFIGURASI KHUSUS PEMBELIAN -----
 const numericFields = [
   'persediaan_barang',
@@ -199,8 +206,17 @@ const numericFields = [
 // (hutang_dagang final dihitung di buildPayload)
 const deriveForForm = (form) => {
   const pembelian = Number(form.persediaan_barang) || 0
+  const biayaAngkut = Number(form.biaya_angkut) || 0
   const persen = Number(form.ppn_persen) || 0
+  const discount = Number(form.discount) || 0
+
+  // Hitung PPN Masukan
   form.ppn_masukan = Math.round((pembelian * persen) / 100)
+
+  // Hitung Hutang Dagang (setelah PPN + biaya angkut - diskon)
+  const totalSebelumDiskon = pembelian + biayaAngkut + form.ppn_masukan
+  const diskonRupiah = (discount / 100) * totalSebelumDiskon
+  form.hutang_dagang = Math.round(totalSebelumDiskon - diskonRupiah)
 }
 
 const defaultForm = () => ({
