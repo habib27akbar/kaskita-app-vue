@@ -126,7 +126,7 @@
           <q-card flat bordered class="tile-card column justify-between full-height">
             <q-card-section class="q-pa-md">
               <div class="text-caption text-grey-7">Trend (Slope)</div>
-              <div class="value q-mt-xs">{{ money(aiRisk?.signals?.slope ?? 0) }}</div>
+              <div class="value q-mt-xs">{{ fmt(aiRisk?.signals?.slope ?? 0) }}</div>
               <div class="text-caption text-grey-7">
                 Volatility: {{ (aiRisk?.signals?.vol_ratio ?? 0).toFixed(2) }}
               </div>
