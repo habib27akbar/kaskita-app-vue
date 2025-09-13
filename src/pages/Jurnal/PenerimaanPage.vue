@@ -294,7 +294,7 @@ const {
   deleteData,
   openForm,
 } = useOfflineCrud({
-  resource: 'jurnal_umum',
+  resource: 'penerimaan',
   searchFields: [
     'no_faktur',
     'keterangan',
