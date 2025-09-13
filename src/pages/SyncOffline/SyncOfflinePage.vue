@@ -156,12 +156,21 @@ import { api } from 'boot/axios'
 import { API_URL } from 'boot/api'
 
 const $q = useQuasar()
+const COA_LOCAL_KEY = 'coa_cache_v1'
 
 /* =========================
    Konfigurasi sumber data
    ========================= */
 const SOURCES = [
   // key, label, endpoint, localStorage key, field tanggal utama (untuk sort)
+  {
+    key: 'coa',
+    label: 'COA',
+    endpoint: '/coa',
+    lkey: COA_LOCAL_KEY,
+    tfield: [],
+    type: 'lookup', // penanda: ini tabel referensi (tanpa email/pagination khusus)
+  },
   {
     key: 'pembelian',
     label: 'Pembelian',
@@ -313,6 +322,15 @@ function reconcileCacheWithServer(lkey, tfields, serverData) {
   return sorted
 }
 
+function mapCoa(arr = []) {
+  return arr.map((item) => ({
+    id: Number(item.id),
+    nomor_akun: item.nomor_akun,
+    // simpan dalam format yang dipakai seluruh app:
+    nama_akun_ind: `${item.nomor_akun} - ${item.nama_akun_ind}`,
+  }))
+}
+
 /* =========================
    Full Sync per modul
    ========================= */
@@ -326,6 +344,25 @@ async function fullSync(key) {
   if (isOffline()) {
     st.error = 'Perangkat offline. Tidak bisa sync.'
     st.syncing = false
+    return
+  }
+
+  if (conf.type === 'lookup') {
+    try {
+      const resp = await api.get(`${API_URL}${conf.endpoint}`, { timeout: 8000 })
+      const raw = resp.data?.data || resp.data || []
+      const mapped = mapCoa(raw)
+      setCache(conf.lkey, mapped) // => localStorage 'coa_cache_v1'
+      st.cacheCount = mapped.length
+      st.lastSync = Date.now()
+      $q.notify({ type: 'positive', message: `Sync ${conf.label} selesai: ${mapped.length} akun.` })
+    } catch (e) {
+      st.error = e?.response?.data?.message || e.message || 'Gagal sinkron COA'
+      $q.notify({ type: 'negative', message: `Sync ${conf.label} gagal: ${st.error}` })
+    } finally {
+      st.syncing = false
+      refreshRows()
+    }
     return
   }
 
