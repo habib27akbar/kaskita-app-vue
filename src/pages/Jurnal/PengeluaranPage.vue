@@ -148,7 +148,7 @@ import { useOfflineCrud } from '@/composables/useOfflineCrud'
 const router = useRouter()
 const $q = useQuasar()
 function goToPrintPage() {
-  router.push('/jurnal-umum/cetak')
+  router.push('/pengeluaran/cetak')
 }
 
 function formatTanggalIndonesia(tanggal) {
