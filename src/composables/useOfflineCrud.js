@@ -4,24 +4,6 @@ import { api } from 'boot/axios'
 import { API_URL } from 'boot/api'
 import { v4 as uuidv4 } from 'uuid'
 
-/**
- * Reusable CRUD offline-first untuk berbagai resource (pembelian, penjualan, dll).
- *
- * @param {Object} opts
- * @param {string}   opts.resource             - nama resource API, contoh: 'pembelian' / 'penjualan'
- * @param {string[]} [opts.searchFields]       - field yang dipakai untuk pencarian client-side
- * @param {string[]} [opts.numericFields]      - field angka yang ingin diparse rupiah saat input
- * @param {Object|Function} opts.defaultForm   - object default form atau function () => object
- * @param {Function} opts.buildPayload         - (form) => payload aman untuk request
- * @param {string[]} [opts.dateFieldsOrder]    - prioritas field tanggal untuk sorting
- * @param {string[]} [opts.mergeBaseFields]    - field dasar yang dipakai saat dedupe prefer-local
- * @param {Function} [opts.deriveForForm]      - optional: (form) => void untuk set nilai turunan (misal ppn_masukan)
- * @param {Function} [opts.matchesFn]          - optional: custom pencarian, default pakai searchFields (lowercase)
- * @param {string}   [opts.localKey]           - custom localStorage key; default: `${resource}_data`
- * @param {string}   [opts.lastEmailKey]       - localStorage key untuk email terakhir; default: 'last_user_email'
- * @param {number}   [opts.timeout]            - timeout request ms; default 7000
- * @param {boolean}  [opts.autoFetch]          - panggil fetchData onMounted; default true
- */
 export function useOfflineCrud(opts) {
   const {
     resource,
@@ -36,6 +18,7 @@ export function useOfflineCrud(opts) {
     lastEmailKey = 'last_user_email',
     timeout = 7000,
     autoFetch = true,
+    hydrate, // optional: (rec) => recDiperkaya
   } = opts || {}
 
   if (!resource) throw new Error('useOfflineCrud: "resource" wajib diisi')
@@ -48,7 +31,7 @@ export function useOfflineCrud(opts) {
   const $q = useQuasar()
   const loading = ref(false)
   const saving = ref(false)
-  const items = ref([]) // daftar (mis. pembelianList/penjualanList)
+  const items = ref([])
   const formDialog = ref(false)
 
   // -------------------
@@ -56,6 +39,7 @@ export function useOfflineCrud(opts) {
   // -------------------
   const LOCAL_KEY = localKey || `${resource}_data`
   const LAST_EMAIL_KEY = lastEmailKey
+  const applyHydrate = (rec) => (typeof hydrate === 'function' ? hydrate({ ...rec }) : rec)
 
   const authRaw = localStorage.getItem('auth_user')
   const auth = authRaw ? JSON.parse(authRaw) : null
@@ -66,7 +50,7 @@ export function useOfflineCrud(opts) {
     if (!q) return true
     const key = normalizeStr(q)
     const hay = searchFields.map((f) => normalizeStr(item?.[f])).join(' | ')
-    return hay.includes(key) // cukup includes, hindari .match (regex)
+    return hay.includes(key)
   }
 
   // ---------------
@@ -76,26 +60,21 @@ export function useOfflineCrud(opts) {
   const searchQuery = ref('')
   const sort = reactive({ by: 'id', descending: true })
 
-  // Slice client-side untuk tampilan per halaman
   const pagedItems = computed(() => {
     const start = (pagination.page - 1) * pagination.perPage
     const end = start + pagination.perPage
     return items.value.slice(start, end)
   })
 
-  // Reset page saat kata kunci berubah
   watch(
     () => searchQuery.value,
-    () => {
-      pagination.page = 1
-    },
+    () => (pagination.page = 1),
   )
 
   // ----------
   // Utilities
   // ----------
   const normalizeStr = (s) => String(s ?? '').toLowerCase()
-
   const matchesSearch = matchesFn || defaultMatches
 
   const formatTanggalIndonesia = (tanggal) => {
@@ -116,7 +95,6 @@ export function useOfflineCrud(opts) {
     err?.code === 'ERR_NETWORK' ||
     err?.message?.toLowerCase?.().includes('network error') ||
     !err?.response
-
   const isOffline = () => !navigator.onLine
 
   // ---------------
@@ -131,13 +109,13 @@ export function useOfflineCrud(opts) {
   }
   const setCache = (arr) => localStorage.setItem(LOCAL_KEY, JSON.stringify(arr))
 
+  const pickDate = (o) => {
+    for (const f of dateFieldsOrder) if (o?.[f]) return o[f]
+    return 0
+  }
+
   const sortNewestFirst = (arr) => {
     return [...arr].sort((a, b) => {
-      // cari field tanggal sesuai prioritas
-      const pickDate = (o) => {
-        for (const f of dateFieldsOrder) if (o?.[f]) return o[f]
-        return 0
-      }
       const ta = new Date(pickDate(a) || 0).getTime()
       const tb = new Date(pickDate(b) || 0).getTime()
       if (ta && tb && ta !== tb) return tb - ta
@@ -167,13 +145,12 @@ export function useOfflineCrud(opts) {
         continue
       } // keep prev
 
-      // 2) sama2 synced/pending -> pilih terbaru by updated_at/created_at/tanggal
-      const t = (o) => new Date(o?.updated_at || o?.created_at || o?.tanggal || 0).getTime()
+      // 2) terbaru by updated_at/created_at/dateFieldsOrder
+      const t = (o) => new Date(o?.updated_at || o?.created_at || pickDate(o) || 0).getTime()
       const ti = t(item),
         tp = t(prev)
 
       if (ti > tp) {
-        // jika item terbaru pending namun field dasar tidak berubah, keep prev
         const baseChanged = mergeBaseFields.some((f) => (item?.[f] ?? null) !== (prev?.[f] ?? null))
         if (item.synced === false && prev.synced === true && !baseChanged) {
           // keep prev
@@ -183,7 +160,6 @@ export function useOfflineCrud(opts) {
       } else if (ti < tp) {
         // keep prev
       } else {
-        // tie-break: server override lokal
         if (item.__from === 'server' && prev.__from !== 'server') map.set(key, item)
       }
     }
@@ -192,7 +168,11 @@ export function useOfflineCrud(opts) {
 
   const normalizeForView = (arr) => {
     const m = new Map()
-    for (const it of arr) {
+    for (const it0 of arr) {
+      // SKIP kalau flagged delete
+      if (it0?.__op === 'delete') continue
+
+      const it = it0
       const key = String(it.id || it.local_id)
       if (!m.has(key)) {
         m.set(key, it)
@@ -200,7 +180,7 @@ export function useOfflineCrud(opts) {
       }
       const prev = m.get(key)
 
-      // pending menang untuk view
+      // pending menang
       if (it.synced === false && prev.synced !== false) {
         m.set(key, { ...prev, ...it })
         continue
@@ -210,9 +190,9 @@ export function useOfflineCrud(opts) {
         continue
       }
 
-      // terbaru menang
-      const ta = new Date(it.created_at || it.tanggal || 0).getTime()
-      const tb = new Date(prev.created_at || prev.tanggal || 0).getTime()
+      // pilih yang lebih baru
+      const ta = new Date(pickDate(it) || 0).getTime()
+      const tb = new Date(pickDate(prev) || 0).getTime()
       if (ta > tb) m.set(key, it)
     }
     return sortNewestFirst(Array.from(m.values()))
@@ -235,19 +215,32 @@ export function useOfflineCrud(opts) {
   }
 
   const viewFilter = (x) => {
+    // jangan tampilkan item yang sedang/akan dihapus
+    if (x?.__op === 'delete') return false
     if (x.synced === false) return true
     return x.email ? x.email === currentEmail : true
   }
 
+  // GANTI INI
   const reconcileCacheWithServer = (serverData) => {
     const serverIds = new Set(serverData.map((x) => String(x.id)))
     let cache = getCache()
+
     cache = cache.filter((x) => {
+      // Jangan simpan atau tampilkan yang dihapus
+      if (x?.__op === 'delete') return false
+
       const isMine = x.email ? x.email === currentEmail : true
       if (!isMine) return true
+
+      // Pending tetap disimpan untuk disync
       if (x.synced === false) return true
+
+      // Untuk item synced milik user aktif, keep hanya yang masih ada di server
       return serverIds.has(String(x.id))
     })
+
+    // Dedupe by id; prefer local pending kalau ada
     const merged = dedupeByIdPreferLocal([...cache, ...serverData])
     const sorted = sortNewestFirst(merged)
     setCache(sorted)
@@ -300,7 +293,6 @@ export function useOfflineCrud(opts) {
     numericFields.map((f) => [f, computed(() => formatRupiah(form[f]))]),
   )
 
-  // Nilai turunan form (opsional), misal: set ppn_masukan dari persediaan_barang * ppn_persen
   if (typeof opts.deriveForForm === 'function') {
     watchEffect(() => {
       opts.deriveForForm(form)
@@ -316,11 +308,16 @@ export function useOfflineCrud(opts) {
     formDialog.value = true
   }
 
+  function mergeServerWithLocal(serverItem, localPayload) {
+    return { ...(localPayload || {}), ...(serverItem || {}) }
+  }
+
   // ----------------------
   // Sync Offline <-> Server
   // ----------------------
   const syncOfflineData = async () => {
     if (isOffline()) return
+
     let cache = getCache()
     const toSync = cache.filter(
       (x) => x.synced === false && (x.email ? x.email === currentEmail : true),
@@ -329,16 +326,22 @@ export function useOfflineCrud(opts) {
 
     for (const record of toSync) {
       try {
+        // DELETE
         if (record.__op === 'delete') {
-          if (!String(record.id).startsWith('local_'))
+          if (!String(record.id).startsWith('local_')) {
             await api.delete(`${API_URL}/${resource}/${record.id}`)
+          }
           cache = cache.filter((x) => x.id !== record.id)
           continue
         }
+
+        // UPDATE
         if (record.__op === 'update') {
+          const localPayload = buildPayload(record)
+
           if (!String(record.id).startsWith('local_')) {
             await api.put(`${API_URL}/${resource}/${record.id}`, {
-              ...buildPayload(record),
+              ...localPayload,
               email: currentEmail,
             })
             const idx = cache.findIndex((x) => x.id === record.id)
@@ -348,40 +351,54 @@ export function useOfflineCrud(opts) {
             }
           } else {
             const res = await api.post(`${API_URL}/${resource}`, {
-              ...buildPayload(record),
+              ...localPayload,
               email: currentEmail,
             })
             const serverItem = res.data?.data || res.data
+            const merged = mergeServerWithLocal(serverItem, localPayload)
+
             const idx = cache.findIndex((x) => x.id === record.id)
             if (idx !== -1) {
-              cache[idx] = {
+              cache[idx] = applyHydrate({
                 ...cache[idx],
-                ...serverItem,
+                ...merged,
                 email: currentEmail,
-                id: serverItem.id,
+                id: serverItem?.id ?? cache[idx].id,
                 synced: true,
-              }
+                created_at:
+                  serverItem?.created_at || cache[idx].created_at || new Date().toISOString(),
+                updated_at: serverItem?.updated_at || new Date().toISOString(),
+              })
               delete cache[idx].__op
             }
           }
           continue
         }
+
         // CREATE
-        const res = await api.post(`${API_URL}/${resource}`, {
-          ...buildPayload(record),
-          email: currentEmail,
-        })
-        const serverItem = res.data?.data || res.data
-        const idx = cache.findIndex((x) => x.id === record.id)
-        if (idx !== -1) {
-          cache[idx] = {
-            ...cache[idx],
-            ...serverItem,
+        {
+          const localPayload = buildPayload(record)
+          const res = await api.post(`${API_URL}/${resource}`, {
+            ...localPayload,
             email: currentEmail,
-            id: serverItem.id,
-            synced: true,
+          })
+          const serverItem = res.data?.data || res.data
+          const merged = mergeServerWithLocal(serverItem, localPayload)
+
+          const idx = cache.findIndex((x) => x.id === record.id)
+          if (idx !== -1) {
+            cache[idx] = applyHydrate({
+              ...cache[idx],
+              ...merged,
+              email: currentEmail,
+              id: serverItem?.id ?? cache[idx].id,
+              synced: true,
+              created_at:
+                serverItem?.created_at || cache[idx].created_at || new Date().toISOString(),
+              updated_at: serverItem?.updated_at || new Date().toISOString(),
+            })
+            delete cache[idx].__op
           }
-          delete cache[idx].__op
         }
       } catch (e) {
         console.warn('Sync error:', e)
@@ -391,7 +408,11 @@ export function useOfflineCrud(opts) {
         })
       }
     }
+
     setCache(sortNewestFirst(cache))
+    const refreshed = normalizeForView(getCache().filter(viewFilter))
+    items.value = refreshed
+    pagination.total = refreshed.length
   }
 
   const canPruneCache = ({ page, search, serverCount, serverTotal }) => {
@@ -411,12 +432,13 @@ export function useOfflineCrud(opts) {
         params: { email: currentEmail, page, perPage },
         timeout: timeout + 1000,
       })
-      const dataArr = (resp.data?.data || resp.data || []).map((r) => ({
+      const dataArrRaw = (resp.data?.data || resp.data || []).map((r) => ({
         ...r,
         email: currentEmail,
         synced: true,
         created_at: r.created_at || new Date().toISOString(),
       }))
+      const dataArr = dataArrRaw.map(applyHydrate) // HYDRATE
       all.push(...dataArr)
       const total = resp.data?.total ?? resp.data?.meta?.total
       if (total != null) {
@@ -463,7 +485,7 @@ export function useOfflineCrud(opts) {
       })
 
       const toNum = (v) => (v == null ? 0 : Number(v))
-      const serverData = (response.data?.data || response.data || []).map((r) => ({
+      const serverDataRaw = (response.data?.data || response.data || []).map((r) => ({
         ...r,
         __from: 'server',
         email: currentEmail,
@@ -471,9 +493,8 @@ export function useOfflineCrud(opts) {
         created_at: r.created_at || new Date().toISOString(),
         updated_at: r.updated_at || r.created_at || null,
       }))
-
-      // Jika kamu ingin “amankan” angka tertentu agar tidak NaN, gunakan numericFields
-      for (const it of serverData) for (const f of numericFields) it[f] = toNum(it[f])
+      for (const it of serverDataRaw) for (const f of numericFields) it[f] = toNum(it[f])
+      const serverData = serverDataRaw.map(applyHydrate) // HYDRATE
 
       const serverTotal = response.data?.total ?? response.data?.meta?.total
       const serverCount = serverData.length
@@ -486,7 +507,7 @@ export function useOfflineCrud(opts) {
 
       let merged
       if (okToPrune) {
-        merged = reconcileCacheWithServer(serverData)
+        merged = reconcileCacheWithServer(serverData) // sudah hydrated
       } else {
         const existing = getCache()
         merged = dedupeByIdPreferLocal([...existing, ...serverData])
@@ -501,9 +522,17 @@ export function useOfflineCrud(opts) {
         display = normalizeForView(merged.filter(viewFilter))
       }
 
-      items.value = display
+      // Pastikan tidak ada id duplikat di display (jaga-jaga)
+      const uniq = new Map()
+      for (const it of display) {
+        const k = String(it.id || it.local_id)
+        if (!uniq.has(k)) uniq.set(k, it)
+      }
+      items.value = Array.from(uniq.values())
       pagination.total = items.value.length
+      /* ====== SAMPAI DI SINI ====== */
 
+      // lanjutkan kode kamu seperti semula:
       await syncOfflineData()
 
       if (!searchQuery.value) {
@@ -538,7 +567,6 @@ export function useOfflineCrud(opts) {
     })
 
   const saveData = async ({ validate } = {}) => {
-    // optional validate(form) -> string|undefined
     if (typeof validate === 'function') {
       const err = validate(form)
       if (err) {
@@ -548,17 +576,20 @@ export function useOfflineCrud(opts) {
     }
 
     const isEdit = !!form.id
-    //const payload = buildPayload(form)
     const basePayload = buildPayload(form)
-    const payload = { ...basePayload, email: currentEmail } // paksa ada email
+    const payload = { ...basePayload, email: currentEmail }
     saving.value = true
+
+    function mergeServerWithLocal(serverItem, localPayload) {
+      return { ...(localPayload || {}), ...(serverItem || {}) }
+    }
 
     const saveOfflineLocal = () => {
       let cache = getCache()
       if (isEdit) {
         const index = cache.findIndex((item) => String(item.id) === String(form.id))
         if (index !== -1) {
-          cache[index] = {
+          cache[index] = applyHydrate({
             ...cache[index],
             ...payload,
             id: form.id,
@@ -566,20 +597,20 @@ export function useOfflineCrud(opts) {
             created_at: cache[index].created_at || new Date().toISOString(),
             synced: false,
             __op: 'update',
-          }
+          })
         }
         $q.notify({ type: 'warning', message: 'Data diperbarui (offline)' })
       } else {
         const localId = `local_${Date.now()}`
         form.id = localId
-        const newData = {
+        const newData = applyHydrate({
           ...payload,
           id: localId,
           email: currentEmail,
           created_at: new Date().toISOString(),
           synced: false,
           __op: 'create',
-        }
+        })
         cache = normalizeForView([newData, ...cache])
         $q.notify({ type: 'warning', message: 'Data ditambahkan (offline)' })
       }
@@ -595,36 +626,59 @@ export function useOfflineCrud(opts) {
         if (isEdit) {
           const res = await api.put(`${API_URL}/${resource}/${form.id}`, payload)
           const serverItem = res?.data?.data || res?.data || null
+          const mergedServerItem = mergeServerWithLocal(serverItem, payload)
           const cache = getCache()
           const idx = cache.findIndex((x) => String(x.id) === String(form.id))
           if (idx !== -1) {
-            cache[idx] = {
+            cache[idx] = applyHydrate({
               ...cache[idx],
-              ...(serverItem || payload),
+              ...(mergedServerItem || payload),
               id: serverItem?.id ?? form.id,
               email: currentEmail,
               synced: true,
               local_id: cache[idx].local_id || form.local_id || payload.local_id || uuidv4(),
               updated_at: serverItem?.updated_at || new Date().toISOString(),
-            }
+            })
             setCache(sortNewestFirst(cache))
           }
           $q.notify({ type: 'positive', message: 'Data diperbarui (online)' })
         } else {
+          // ==== CREATE (ONLINE) ====
           const res = await api.post(`${API_URL}/${resource}`, payload)
-          const created = res.data?.data || res.data
+          const createdServer = res.data?.data || res.data
+
+          // Kalau server tidak menyertakan id -> jangan injeksi placeholder, langsung refetch
+          if (!createdServer || createdServer.id == null) {
+            $q.notify({ type: 'positive', message: 'Data ditambahkan (online)' })
+            formDialog.value = false
+            resetForm()
+            await fetchData() // tarik data lengkap dari server, hindari baris kosong
+            return
+          }
+
+          // Server bawa id -> aman untuk disuntikkan sekali saja
+          // Gabungkan payload + server (server override), lalu HYDRATE supaya nama_coa_* langsung tampil
+          const createdMerged = mergeServerWithLocal(createdServer, payload)
+          const created = applyHydrate({
+            ...createdMerged,
+            email: currentEmail,
+            synced: true,
+            created_at: createdMerged.created_at || new Date().toISOString(),
+          })
+
           $q.notify({ type: 'positive', message: 'Data ditambahkan (online)' })
-          const cache = getCache()
-          const withoutDup = cache.filter((x) => String(x.id) !== String(created.id))
-          const updated = sortNewestFirst([
-            {
-              ...created,
-              email: currentEmail,
-              synced: true,
-              created_at: created.created_at || new Date().toISOString(),
-            },
-            ...withoutDup,
-          ])
+
+          // Bersihkan kemungkinan entri duplikat (id sama / local_id sama) sebelum push
+          let cache = getCache()
+          cache = cache.filter((x) => {
+            if (String(x.id) === String(created.id)) return false
+            if (x.local_id && created.local_id && String(x.local_id) === String(created.local_id))
+              return false
+            return true
+          })
+
+          // Masukkan satu-satunya versi yang benar
+          const updated = sortNewestFirst([created, ...cache])
           setCache(updated)
           items.value = normalizeForView(updated.filter(viewFilter))
           pagination.total = items.value.length
@@ -685,16 +739,20 @@ export function useOfflineCrud(opts) {
           })
         }
         setCache(cache)
-        items.value = normalizeForView(getCache())
-        pagination.total = items.value.length
+        // Langsung segarkan list tampilan TANPA item delete
+        const after = normalizeForView(getCache().filter(viewFilter))
+        items.value = after
+        pagination.total = after.length
         $q.notify({ type: 'warning', message: 'Data dihapus (offline)' })
       } else {
         try {
           await api.delete(`${API_URL}/${resource}/${id}`)
+
           const cache = getCache().filter((x) => String(x.id) !== String(id))
           setCache(cache)
-          items.value = normalizeForView(cache.filter(viewFilter))
-          pagination.total = items.value.length
+          const after = normalizeForView(cache.filter(viewFilter))
+          items.value = after
+          pagination.total = after.length
           $q.notify({ type: 'positive', message: 'Data dihapus (online)' })
         } catch (e) {
           if (isNetworkError(e)) {
@@ -746,11 +804,7 @@ export function useOfflineCrud(opts) {
   })
   onUnmounted(() => window.removeEventListener('online', onOnline))
 
-  // -------------
-  // Public API
-  // -------------
   return {
-    // state
     loading,
     saving,
     items,
@@ -760,18 +814,15 @@ export function useOfflineCrud(opts) {
     pagination,
     searchQuery,
     sort,
-    // formatters
     formatTanggalIndonesia,
     formatRupiah,
     formattedFields,
-    // actions
     fetchData,
     saveData,
     deleteData,
     openForm,
     resetForm,
     handleInput,
-    // advanced (optional)
     syncOfflineData,
     fullSyncAllPages,
     isOffline,
