@@ -21,8 +21,8 @@
         @update:model-value="fetchData"
         class="q-mb-md"
       />
-      <q-list bordered separator v-if="penerimaanList.length > 0">
-        <q-item v-for="item in penerimaanList" :key="item.id" clickable>
+      <q-list bordered separator v-if="!loading && penerimaanList.length > 0">
+        <q-item v-for="item in pagedItems" :key="String(item.id || item.local_id)" clickable>
           <q-item-section>
             <q-item-label>Coa Debet : {{ item.nama_coa_debet }}</q-item-label>
             <q-item-label>Coa Kredit : {{ item.nama_coa_kredit }}</q-item-label>
@@ -132,759 +132,265 @@
     </q-dialog>
   </q-page>
 </template>
-
 <script setup>
-import { ref, reactive, onMounted, computed, watch } from 'vue'
+import { ref, onMounted, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { useQuasar } from 'quasar'
+import { v4 as uuidv4 } from 'uuid'
 import { api } from 'boot/axios'
 import { API_URL } from 'boot/api'
-import { v4 as uuidv4 } from 'uuid'
-import { useRouter } from 'vue-router'
+import { useOfflineCrud } from '@/composables/useOfflineCrud'
+
+/* =========================
+   Helpers (format & route)
+   ========================= */
 const router = useRouter()
 const $q = useQuasar()
-const saving = ref(false)
-const COA_LOCAL_KEY = 'coa_cache_v1'
-const LAST_EMAIL_KEY = 'last_user_email'
-const authRaw = localStorage.getItem('auth_user')
-const auth = authRaw ? JSON.parse(authRaw) : null
-let currentEmail = auth?.user?.email || localStorage.getItem(LAST_EMAIL_KEY) || 'local'
-localStorage.setItem(LAST_EMAIL_KEY, currentEmail)
-
-const LOCAL_KEY = 'penerimaan_data'
-const penerimaanList = ref([])
-const formDialog = ref(false)
-
-const selectedCoa = ref(null)
-const selectedCoaKredit = ref(null) // untuk Kredit
-const coaList = ref([])
-const allCoa = ref([]) // simpan semua data asli
-
-// --- di atas: state bantu ---
-const targetDebetId = ref(null)
-const targetKreditId = ref(null)
-
-// cari dan set selected dari ID bila list COA sudah ada
-function applySelectedFromIds() {
-  if (targetDebetId.value != null) {
-    selectedCoa.value =
-      allCoa.value.find((o) => o.id === targetDebetId.value) ||
-      // fallback kalau server cuma kirim nama (optional)
-      (form.nama_coa_debet ? { id: targetDebetId.value, nama_akun_ind: form.nama_coa_debet } : null)
-  }
-  if (targetKreditId.value != null) {
-    selectedCoaKredit.value =
-      allCoa.value.find((o) => o.id === targetKreditId.value) ||
-      (form.nama_coa_kredit
-        ? { id: targetKreditId.value, nama_akun_ind: form.nama_coa_kredit }
-        : null)
-  }
+function goToPrintPage() {
+  router.push('/penerimaan/cetak')
 }
+
+function formatTanggalIndonesia(tanggal) {
+  if (!tanggal) return ''
+  const d = new Date(tanggal)
+  return new Intl.DateTimeFormat('id-ID', {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+  }).format(d)
+}
+function formatRupiah(val) {
+  return new Intl.NumberFormat('id-ID', { style: 'decimal' }).format(val || 0)
+}
+function getToday() {
+  const t = new Date()
+  const yyyy = t.getFullYear()
+  const mm = String(t.getMonth() + 1).padStart(2, '0')
+  const dd = String(t.getDate()).padStart(2, '0')
+  return `${yyyy}-${mm}-${dd}`
+}
+
+/* =========================
+   COA (fetch + cache lokal)
+   ========================= */
+const selectedCoa = ref(null) // v-model untuk Nomor Akun Debet (select)
+const selectedCoaKredit = ref(null) // v-model untuk Nomor Akun Kredit (select)
+const coaList = ref([])
+const allCoa = ref([])
+const COA_LOCAL_KEY = 'coa_cache_v1'
 
 function loadCoaFromCache() {
   try {
-    const raw = localStorage.getItem(COA_LOCAL_KEY)
-    return raw ? JSON.parse(raw) : []
-  } catch {
-    return []
+    return JSON.parse(localStorage.getItem(COA_LOCAL_KEY) || '[]')
+  } catch (e) {
+    $q.notify({ type: 'warning', message: e })
   }
 }
 function saveCoaToCache(list) {
   try {
     localStorage.setItem(COA_LOCAL_KEY, JSON.stringify(list || []))
   } catch (e) {
-    $q.notify({ type: 'negative', message: e })
+    $q.notify({ type: 'warning', message: e })
   }
 }
-
-// kalau daftar COA baru selesai di-fetch, terapkan pilihan
-watch(allCoa, () => applySelectedFromIds())
-
-watch(selectedCoa, (val) => {
-  form.id_coa_debet = val?.id || null
-})
-
-watch(selectedCoaKredit, (val) => {
-  form.id_coa_kredit = val?.id || null
-})
-
 async function fetchCoaList() {
-  // a) kalau offline → pakai cache saja
-  if (isOffline()) {
-    const cached = loadCoaFromCache()
-    allCoa.value = cached
-    coaList.value = cached
-    if (!cached.length) {
-      $q.notify({ type: 'warning', message: 'Daftar COA kosong (offline).' })
-    }
-    return
-  }
-
-  // b) kalau online → tampilkan cache dulu (biar cepat), lalu refresh dari server
+  // tampilkan cache dulu biar cepat
   const cached = loadCoaFromCache()
   if (cached.length) {
     allCoa.value = cached
     coaList.value = cached
   }
-
+  // refresh dari server (kalau ada koneksi)
   try {
     const { data } = await api.get(`${API_URL}/coa`, { timeout: 8000 })
     const mapped = (data || []).map((item) => ({
-      id: item.id,
+      id: Number(item.id),
       nama_akun_ind: `${item.nomor_akun} - ${item.nama_akun_ind}`,
     }))
     allCoa.value = mapped
     coaList.value = mapped
-    saveCoaToCache(mapped) // <-- simpan untuk offline nanti
+    saveCoaToCache(mapped)
   } catch (e) {
-    if (!cached.length) {
-      $q.notify({ type: 'negative', message: e })
-    } else {
-      $q.notify({ type: 'warning', message: e })
-    }
+    if (!cached.length) $q.notify({ type: 'warning', message: e })
   }
 }
-
 function filterCoa(val, update) {
-  if (val === '') {
-    update(() => {
-      coaList.value = allCoa.value
-    })
-    return
-  }
-
-  const needle = val.toLowerCase()
+  const q = (val || '').toLowerCase()
   update(() => {
-    coaList.value = allCoa.value.filter((opt) => opt.nama_akun_ind.toLowerCase().includes(needle))
+    if (!q) {
+      coaList.value = allCoa.value
+      return
+    }
+    coaList.value = allCoa.value.filter((opt) => opt.nama_akun_ind.toLowerCase().includes(q))
   })
 }
 
-function goToPrintPage() {
-  router.push('/penerimaan/cetak')
-}
-//const selectedOption = ref(0) // ❌ ini number, tidak cocok dengan '12'
-// Fungsi untuk dapatkan tanggal hari ini dalam format YYYY-MM-DD
-function getToday() {
-  const today = new Date()
-  const yyyy = today.getFullYear()
-  const mm = String(today.getMonth() + 1).padStart(2, '0') // Bulan dimulai dari 0
-  const dd = String(today.getDate()).padStart(2, '0')
-  return `${yyyy}-${mm}-${dd}`
-}
-// Pastikan nilai default dibuat sebelum reactive
-const defaultTanggal = getToday()
-const form = reactive({
+/* =========================
+   useOfflineCrud (inti)
+   ========================= */
+const numericFields = ['debet', 'kredit']
+
+const defaultForm = () => ({
   id: null,
-  local_id: '', // ← Tambahkan ini
-  synced: false, // ← Dan ini
+  local_id: uuidv4(),
+  synced: false,
   no_faktur: '',
   id_coa_debet: null,
-  tanggal_debet: defaultTanggal,
-  debet: '',
-  kredit: '',
+  id_coa_kredit: null,
+  tanggal_debet: getToday(),
+  debet: 0,
+  kredit: 0,
+  keterangan: '',
+  ref: '',
 })
 
-// Lebih aman daripada sekadar navigator.onLine
-function isNetworkError(err) {
-  return (
-    err?.code === 'ERR_NETWORK' ||
-    err?.message?.toLowerCase().includes('network error') ||
-    !err?.response // tidak ada response dari server
-  )
+/** Turunan: kredit mengikuti debet (sesuai UI: field kredit readonly) */
+const deriveForForm = (form) => {
+  const deb = Number(form.debet) || 0
+  form.kredit = deb
 }
 
-// --- deteksi offline yang lebih akurat (soft-offline) ---
-function isOffline() {
-  return !navigator.onLine
-}
-
-function getCache() {
-  try {
-    return JSON.parse(localStorage.getItem(LOCAL_KEY) || '[]')
-  } catch {
-    return []
-  }
-}
-function setCache(arr) {
-  localStorage.setItem(LOCAL_KEY, JSON.stringify(arr))
-}
-
-function sortNewestFirst(arr) {
-  return [...arr].sort((a, b) => {
-    const ta = new Date(a.created_at || a.tanggal_debet || 0).getTime()
-    const tb = new Date(b.created_at || b.tanggal_debet || 0).getTime()
-    if (ta && tb && ta !== tb) return tb - ta
-    const na = Number(a.id),
-      nb = Number(b.id)
-    if (Number.isFinite(na) && Number.isFinite(nb)) return nb - na
-    return String(b.id).localeCompare(String(a.id))
-  })
-}
-
-function dedupeByIdPreferLocal(arr) {
-  const map = new Map()
-  for (const item of arr) {
-    const key = String(item.id)
-    if (!map.has(key)) {
-      map.set(key, item)
-      continue
-    }
-    const prev = map.get(key)
-    const pick = item.synced === false && prev.synced !== false ? item : prev
-    map.set(key, pick)
-  }
-  return Array.from(map.values())
-}
-
-// tampilkan pending untuk semua email; selain itu filter by currentEmail
-function viewFilter(x) {
-  if (x.synced === false) return true
-  return x.email ? x.email === currentEmail : true
-}
-
-function adoptPendingToCurrentEmail() {
-  let cache = getCache(),
-    changed = false
-  cache = cache.map((x) => {
-    if (x?.synced === false && x.email !== currentEmail) {
-      changed = true
-      return { ...x, email: currentEmail }
-    }
-    return x
-  })
-  if (changed) setCache(sortNewestFirst(cache))
-  return cache
-}
-
-function toInt(v) {
-  const n = parseInt(v, 10)
-  return Number.isFinite(n) ? n : 0
-}
-function buildPayload(src) {
-  return {
-    email: currentEmail,
-    no_faktur: String(src.no_faktur || ''),
-    id_coa_debet: src.id_coa_debet ?? null,
-    id_coa_kredit: src.id_coa_kredit ?? null,
-    tanggal_debet: src.tanggal_debet || getToday(),
-    debet: toInt(src.debet),
-    kredit: toInt(src.kredit),
-    keterangan: src.keterangan || '',
-    ref: src.ref || '',
-    local_id: src.local_id || uuidv4(),
-  }
-}
-
-function reconcileCacheWithServer(serverData) {
-  const serverIds = new Set(serverData.map((x) => String(x.id)))
-  let cache = getCache()
-  cache = cache.filter((x) => {
-    const isMine = x.email ? x.email === currentEmail : true
-    if (!isMine) return true
-    if (x.synced === false) return true
-    return serverIds.has(String(x.id))
-  })
-  const merged = dedupeByIdPreferLocal([...cache, ...serverData])
-  const sorted = sortNewestFirst(merged)
-  setCache(sorted)
-  return sorted
-}
-
-async function syncOfflineData() {
-  if (isOffline()) return
-  let cache = getCache()
-  const toSync = cache.filter(
-    (x) => x.synced === false && (x.email ? x.email === currentEmail : true),
-  )
-  if (!toSync.length) return
-
-  for (const rec of toSync) {
-    try {
-      if (rec.__op === 'delete') {
-        if (!String(rec.id).startsWith('local_'))
-          await api.delete(`${API_URL}/penerimaan/${rec.id}`)
-        cache = cache.filter((x) => x.id !== rec.id)
-        continue
-      }
-      if (rec.__op === 'update') {
-        if (!String(rec.id).startsWith('local_')) {
-          await api.put(`${API_URL}/penerimaan/${rec.id}`, buildPayload(rec))
-          const i = cache.findIndex((x) => x.id === rec.id)
-          if (i !== -1) {
-            cache[i].synced = true
-            delete cache[i].__op
-          }
-        } else {
-          const res = await api.post(`${API_URL}/penerimaan`, buildPayload(rec))
-          const serverItem = res.data?.data || res.data
-          const i = cache.findIndex((x) => x.id === rec.id)
-          if (i !== -1) {
-            cache[i] = {
-              ...cache[i],
-              ...serverItem,
-              email: currentEmail,
-              id: serverItem.id,
-              synced: true,
-            }
-            delete cache[i].__op
-          }
-        }
-        continue
-      }
-      // CREATE
-      const res = await api.post(`${API_URL}/penerimaan`, buildPayload(rec))
-      const serverItem = res.data?.data || res.data
-      const i = cache.findIndex((x) => x.id === rec.id)
-      if (i !== -1) {
-        cache[i] = {
-          ...cache[i],
-          ...serverItem,
-          email: currentEmail,
-          id: serverItem.id,
-          synced: true,
-        }
-        delete cache[i].__op
-      }
-    } catch (e) {
-      console.error('Sync penerimaan error:', e)
-      $q.notify({
-        type: 'warning',
-        message: 'Sebagian data offline gagal tersinkron (penerimaan).',
-      })
-    }
-  }
-  setCache(sortNewestFirst(cache))
-}
-
-function canPruneCache({ page, search, serverCount, serverTotal }) {
-  const noSearch = !search
-  const firstPage = page === 1
-  const allItemsReturned = serverTotal != null && serverCount >= serverTotal
-  return noSearch && firstPage && allItemsReturned
-}
-
-async function fullSyncAllPages() {
-  if (isOffline()) return
-  let page = 1
-  const perPage = 200
-  const all = []
-  while (true) {
-    const resp = await api.get(`${API_URL}/penerimaan`, {
-      params: { email: currentEmail, page, perPage },
-      timeout: 8000,
-    })
-    const arr = (resp.data?.data || resp.data || []).map((r) => ({
-      ...r,
-      email: currentEmail,
-      synced: true,
-      created_at: r.created_at || new Date().toISOString(),
-    }))
-    all.push(...arr)
-    const total = resp.data?.total ?? resp.data?.meta?.total
-    if (total != null) {
-      if (all.length >= total) break
-      page += 1
-      continue
-    }
-    if (arr.length < perPage) break
-    page += 1
-  }
-  const after = reconcileCacheWithServer(all)
-  penerimaanList.value = sortNewestFirst(after.filter(viewFilter))
-  pagination.total = penerimaanList.value.length
-}
-
-// Format tanggal Indonesia
-function formatTanggalIndonesia(tanggal) {
-  if (!tanggal) return ''
-  const date = new Date(tanggal)
-  return new Intl.DateTimeFormat('id-ID', {
-    day: 'numeric',
-    month: 'long',
-    year: 'numeric',
-  }).format(date)
-}
-
-// const formattedHutangDagang = computed(() => {
-//   return formatRupiah(form.debet)
-// })
-
-const rupiahFields = ['debet', 'kredit']
-
-function handleInput(fieldName, value) {
-  if (rupiahFields.includes(fieldName)) {
-    const numeric = parseInt(value.toString().replace(/\D/g, '')) || 0
-    form[fieldName] = numeric
-
-    // 🔹 Sinkronkan kredit dengan debet
-    if (fieldName === 'debet') {
-      form.kredit = numeric
-    }
-  } else {
-    form[fieldName] = value
-  }
-}
-
-const formattedFields = {
-  debet: computed(() => formatRupiah(form.debet)),
-  kredit: computed(() => formatRupiah(form.kredit)),
-}
-
-// Format Rupiah
-function formatRupiah(val) {
-  return new Intl.NumberFormat('id-ID', { style: 'decimal' }).format(val)
-}
-
-const pagination = reactive({
-  page: 1,
-  perPage: 10,
-  total: 0,
+/** Payload ke backend (nama field DIJAGA sesuai permintaan) */
+const buildPayload = (src) => ({
+  email: getEmail(),
+  no_faktur: String(src.no_faktur || ''),
+  id_coa_debet: src.id_coa_debet ?? null,
+  id_coa_kredit: src.id_coa_kredit ?? null,
+  tanggal_debet: src.tanggal_debet || getToday(),
+  debet: Number(src.debet) || 0,
+  kredit: Number(src.kredit) || 0,
+  keterangan: src.keterangan || '',
+  ref: src.ref || '',
+  local_id: src.local_id || uuidv4(),
 })
 
-const searchQuery = ref('')
-const sort = reactive({
-  by: 'id',
-  descending: true,
+/** Ambil email user untuk filter data (sama pola dengan halaman lain) */
+const LAST_EMAIL_KEY = 'last_user_email'
+function getEmail() {
+  const authRaw = localStorage.getItem('auth_user')
+  const auth = authRaw ? JSON.parse(authRaw) : null
+  const email = auth?.user?.email || localStorage.getItem(LAST_EMAIL_KEY) || 'local'
+  localStorage.setItem(LAST_EMAIL_KEY, email)
+  return email
+}
+
+const {
+  // state umum
+  loading,
+  saving,
+  items: penerimaanList,
+  pagedItems,
+  formDialog,
+  form,
+  pagination,
+  searchQuery,
+  sort,
+  // format & input
+  formattedFields,
+  handleInput,
+  // CRUD
+  fetchData,
+  saveData,
+  deleteData,
+  openForm,
+} = useOfflineCrud({
+  resource: 'jurnal_umum',
+  searchFields: [
+    'no_faktur',
+    'keterangan',
+    'ref',
+    'tanggal_debet',
+    'email',
+    'debet',
+    'kredit',
+    'id',
+    'id_coa_debet',
+    'id_coa_kredit',
+  ],
+  numericFields,
+  defaultForm,
+  buildPayload,
+  deriveForForm,
+  mergeBaseFields: [
+    'id_coa_debet',
+    'id_coa_kredit',
+    'debet',
+    'kredit',
+    'tanggal_debet',
+    'no_faktur',
+  ],
 })
 
-const loading = ref(false)
-
-function resetForm() {
-  form.id = null
-  form.no_faktur = ''
-  form.tanggal_debet = getToday()
-  form.keterangan = ''
-  form.ref = ''
-  form.debet = '0'
-  form.kredit = '0'
-  form.id_coa_debet = null
-  form.id_coa_kredit = null
-
-  selectedCoa.value = null
-  selectedCoaKredit.value = null
-}
-
-function openForm(item = null) {
-  if (item) {
-    Object.assign(form, item)
-
-    // simpan target ID lalu set selected (kalau list sudah ada)
-    targetDebetId.value = item.id_coa_debet ?? null
-    targetKreditId.value = item.id_coa_kredit ?? null
-    applySelectedFromIds()
-  } else {
-    resetForm()
-    form.local_id = uuidv4()
-
-    // pastikan clear selected saat tambah baru
-    selectedCoa.value = null
-    selectedCoaKredit.value = null
-    targetDebetId.value = null
-    targetKreditId.value = null
-  }
-  formDialog.value = true
-}
-
-function normalizeForView(arr) {
-  const m = new Map()
-  for (const it of arr) {
-    // kunci prioritas: local_id kalau ada, else id
-    const key = String(it.local_id || it.id)
-
-    if (!m.has(key)) {
-      m.set(key, it)
-      continue
-    }
-
-    const prev = m.get(key)
-
-    // Prioritas tampilan:
-    // 1) kalau ada yang pending (synced:false), tampilkan yang pending
-    if (it.synced === false && prev.synced !== false) {
-      m.set(key, it)
-      continue
-    }
-    if (prev.synced === false && it.synced !== false) {
-      // keep prev
-      continue
-    }
-
-    // 2) kalau sama-sama pending atau sama-sama synced, pilih yang "terbaru"
-    const ta = new Date(it.created_at || it.tanggal || 0).getTime()
-    const tb = new Date(prev.created_at || prev.tanggal || 0).getTime()
-    if (ta > tb) m.set(key, it)
-  }
-
-  // urutkan seperti biasa
-  return sortNewestFirst(Array.from(m.values()))
-}
-
-async function fetchData() {
-  loading.value = true
-  if (!isOffline()) adoptPendingToCurrentEmail()
-
-  if (isOffline()) {
-    const cached = getCache()
-    penerimaanList.value = sortNewestFirst(cached)
-    pagination.total = penerimaanList.value.length
-    loading.value = false
-    return
-  }
-
-  try {
-    const response = await api.get(`${API_URL}/penerimaan`, {
-      params: {
-        email: currentEmail,
-        page: pagination.page,
-        perPage: pagination.perPage,
-        search: searchQuery.value,
-        sortBy: sort.by,
-        sortDesc: sort.descending,
-      },
-      timeout: 7000,
-    })
-
-    const serverData = (response.data?.data || response.data || []).map((r) => ({
-      ...r,
-      email: currentEmail,
-      synced: true,
-      created_at: r.created_at || new Date().toISOString(),
-    }))
-
-    const serverTotal = response.data?.total ?? response.data?.meta?.total
-    const serverCount = serverData.length
-
-    let merged
-    if (
-      canPruneCache({ page: pagination.page, search: searchQuery.value, serverCount, serverTotal })
-    ) {
-      merged = reconcileCacheWithServer(serverData)
-    } else {
-      const existing = getCache()
-      merged = dedupeByIdPreferLocal([...existing, ...serverData])
-      setCache(sortNewestFirst(merged))
-    }
-
-    penerimaanList.value = sortNewestFirst(merged.filter(viewFilter))
-    pagination.total = penerimaanList.value.length
-
-    await syncOfflineData()
-
-    const afterSync = getCache()
-    penerimaanList.value = sortNewestFirst(afterSync.filter(viewFilter))
-    pagination.total = penerimaanList.value.length
-  } catch (e) {
-    console.error(e)
-    const cached = getCache()
-    penerimaanList.value = sortNewestFirst(cached.filter(viewFilter))
-    pagination.total = penerimaanList.value.length
-    $q.notify({
-      type: cached.length ? 'warning' : 'negative',
-      message: cached.length
-        ? 'Mode offline: data dari cache (penerimaan)'
-        : 'Gagal mengambil data & cache kosong',
-    })
-  } finally {
-    loading.value = false
-  }
-}
-
-async function saveData() {
-  if (!form.id_coa_debet) return $q.notify({ type: 'negative', message: 'Nomor Akun Debet wajib' })
-  if (!form.id_coa_kredit)
-    return $q.notify({ type: 'negative', message: 'Nomor Akun Kredit wajib' })
-  if (!form.debet) return $q.notify({ type: 'negative', message: 'Debet wajib' })
-
-  const isEdit = !!form.id
-  const payload = buildPayload(form)
-  saving.value = true
-
-  const saveOfflineLocal = () => {
-    let cache = getCache()
-    if (isEdit) {
-      const index = cache.findIndex((item) => item.id === form.id)
-      if (index !== -1) {
-        cache[index] = {
-          ...payload,
-          id: form.id,
-          email: currentEmail,
-          created_at: cache[index].created_at || new Date().toISOString(),
-          synced: false,
-          __op: 'update',
-        }
-      }
-      $q.notify({ type: 'warning', message: 'Data diperbarui (offline)' })
-    } else {
-      const localId = `local_${Date.now()}`
-      form.id = localId
-      const newData = {
-        ...payload,
-        id: localId,
-        email: currentEmail,
-        created_at: new Date().toISOString(),
-        synced: false,
-        __op: 'create',
-      }
-      cache = normalizeForView([newData, ...cache])
-      $q.notify({ type: 'warning', message: 'Data ditambahkan (offline)' })
-    }
-    setCache(cache)
-    penerimaanList.value = normalizeForView(getCache())
-    pagination.total = penerimaanList.value.length
-  }
-
-  try {
-    if (isOffline()) {
-      saveOfflineLocal()
-    } else {
-      if (isEdit) {
-        await api.put(`${API_URL}/penerimaan/${form.id}`, payload)
-        const cache = getCache()
-        const idx = cache.findIndex((x) => String(x.id) === String(form.id))
-        if (idx !== -1) {
-          cache[idx] = {
-            ...cache[idx],
-            ...payload,
-            email: currentEmail,
-            synced: true,
-            updated_at: new Date().toISOString(),
-          }
-          setCache(sortNewestFirst(cache))
-        }
-        $q.notify({ type: 'positive', message: 'Data diperbarui (online)' })
-      } else {
-        const res = await api.post(`${API_URL}/penerimaan`, payload)
-        const created = res.data?.data || res.data
-        const cache = getCache()
-        const withoutDup = cache.filter((x) => String(x.id) !== String(created.id))
-        const updated = sortNewestFirst([
-          {
-            ...created,
-            email: currentEmail,
-            synced: true,
-            created_at: created.created_at || new Date().toISOString(),
-          },
-          ...withoutDup,
-        ])
-        setCache(updated)
-        penerimaanList.value = sortNewestFirst(updated.filter(viewFilter))
-        pagination.total = penerimaanList.value.length
-        pagination.page = 1
-        $q.notify({ type: 'positive', message: 'Data ditambahkan (online)' })
-      }
-    }
-
-    formDialog.value = false
-    resetForm()
-    fetchData()
-  } catch (error) {
-    if (isNetworkError(error)) {
-      // === FALLBACK KE OFFLINE ===
-      saveOfflineLocal()
-      formDialog.value = false
-      resetForm()
-      // jangan panggil API lagi di sini; cukup refresh dari cache
-      penerimaanList.value = normalizeForView(getCache())
-      pagination.total = penerimaanList.value.length
-      $q.notify({ type: 'warning', message: 'Koneksi bermasalah. Data disimpan offline.' })
-    } else {
-      $q.notify({
-        type: 'negative',
-        message: `Gagal menyimpan: ${error?.response?.data?.message || error.message}`,
-      })
-    }
-  } finally {
-    saving.value = false
-  }
-}
-
-function deleteData(id) {
-  const item = penerimaanList.value.find((p) => p.id === id)
-  //console.log('ITEM YANG AKAN DIHAPUS:', item)
-  const nilaiHutang = item ? ` (Penerimaan : Rp ${Number(item.debet).toLocaleString()})` : ''
-  $q.dialog({
-    title: 'Konfirmasi',
-    message: `Yakin ingin menghapus data ini ${nilaiHutang}?`,
-    cancel: true,
-    persistent: true,
-  }).onOk(async () => {
-    try {
-      if (isOffline()) {
-        let cache = getCache()
-        const idx = cache.findIndex((x) => x.id === id)
-        if (idx !== -1) {
-          if (String(cache[idx].id).startsWith('local_')) cache.splice(idx, 1)
-          else {
-            cache[idx].__op = 'delete'
-            cache[idx].synced = false
-          }
-        } else {
-          cache.push({
-            id,
-            email: currentEmail,
-            created_at: new Date().toISOString(),
-            __op: 'delete',
-            synced: false,
-          })
-        }
-        setCache(cache)
-        penerimaanList.value = sortNewestFirst(getCache())
-        pagination.total = penerimaanList.value.length
-        $q.notify({ type: 'warning', message: 'Data dihapus (offline)' })
-      } else {
-        try {
-          await api.delete(`${API_URL}/penerimaan/${id}`)
-          const cache = getCache().filter((x) => String(x.id) !== String(id))
-          setCache(cache)
-          penerimaanList.value = normalizeForView(cache.filter(viewFilter))
-          pagination.total = penerimaanList.value.length
-          $q.notify({ type: 'positive', message: 'Data dihapus (online)' })
-        } catch (e) {
-          if (isNetworkError(e)) {
-            let cache = getCache()
-            const idx = cache.findIndex((x) => x.id === id)
-            if (idx !== -1) {
-              if (String(cache[idx].id).startsWith('local_')) cache.splice(idx, 1)
-              else {
-                cache[idx].__op = 'delete'
-                cache[idx].synced = false
-              }
-            } else {
-              cache.push({
-                id,
-                email: currentEmail,
-                created_at: new Date().toISOString(),
-                __op: 'delete',
-                synced: false,
-              })
-            }
-            setCache(cache)
-            penerimaanList.value = normalizeForView(getCache())
-            pagination.total = penerimaanList.value.length
-            $q.notify({ type: 'warning', message: 'Koneksi bermasalah. Hapus disimpan offline.' })
-          } else {
-            $q.notify({ type: 'negative', message: 'Gagal menghapus data' })
-          }
-        }
-      }
-
-      fetchData()
-    } catch {
-      $q.notify({ type: 'negative', message: 'Gagal menghapus data' })
-    }
-  })
-}
-
-// Auto-fetch saat kembali online
-window.addEventListener('online', async () => {
-  adoptPendingToCurrentEmail()
-  fetchCoaList()
-  await syncOfflineData()
-  await fullSyncAllPages()
-  await fetchData()
+/* =========================
+   Sinkronisasi select COA
+   ========================= */
+watch(selectedCoa, (val) => {
+  form.id_coa_debet = val?.id ?? null
 })
+watch(selectedCoaKredit, (val) => {
+  form.id_coa_kredit = val?.id ?? null
+})
+//console.log(form.id_coa_kredit)
+
+/** Saat edit: set selectedCoa/selectedCoaKredit dari id yang ada */
+watch(
+  () => [form.id_coa_debet, form.id_coa_kredit, allCoa.value],
+  () => {
+    if (!allCoa.value?.length) return
+    const debId = form.id_coa_debet != null ? Number(form.id_coa_debet) : null
+    const kreId = form.id_coa_kredit != null ? Number(form.id_coa_kredit) : null
+    selectedCoa.value = allCoa.value.find((o) => o.id === debId) || null
+    selectedCoaKredit.value = allCoa.value.find((o) => o.id === kreId) || null
+  },
+  { immediate: true },
+)
+
+/* =========================
+   Expose ke template (biar 100% sama)
+   ========================= */
+function formatListTanggal(v) {
+  return formatTanggalIndonesia(v)
+}
+
+function openFormWrapper(item = null) {
+  openForm(item)
+  // pastikan kredit readonly mengikuti debet begitu dialog dibuka
+  deriveForForm(form)
+}
 
 onMounted(() => {
-  fetchData()
   fetchCoaList()
+  fetchData()
+})
+
+defineExpose({
+  // tampilan & aksi (nama sama persis dgn template)
+  goToPrintPage,
+  formatTanggalIndonesia: formatListTanggal,
+  formatRupiah,
+  openForm: openFormWrapper,
+  saveData,
+  deleteData,
+  fetchData,
+
+  // state template
+  penerimaanList,
+  pagedItems,
+  formDialog,
+  form,
+  pagination,
+  searchQuery,
+  loading,
+  saving,
+  sort,
+  // input uang
+  formattedFields,
+  handleInput,
+
+  // select COA
+  selectedCoa,
+  selectedCoaKredit,
+  coaList,
+  filterCoa,
 })
 </script>
