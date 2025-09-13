@@ -24,8 +24,8 @@
       <q-list bordered separator v-if="!loading && pengeluaranList.length > 0">
         <q-item v-for="item in pagedItems" :key="String(item.id || item.local_id)" clickable>
           <q-item-section>
-            <q-item-label>Coa Kredit : {{ item.nama_coa_kredit }}</q-item-label>
-            <q-item-label>Coa Debet : {{ item.nama_coa_debet }}</q-item-label>
+            <q-item-label>Coa Kredit : {{ onlyCoaName(item.nama_coa_kredit) }}</q-item-label>
+            <q-item-label>Coa Debet : {{ onlyCoaName(item.nama_coa_debet) }}</q-item-label>
 
             <q-item-label>Tanggal: {{ formatTanggalIndonesia(item.tanggal_kredit) }}</q-item-label>
 
@@ -134,7 +134,7 @@
   </q-page>
 </template>
 <script setup>
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted, watch, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useQuasar } from 'quasar'
 import { v4 as uuidv4 } from 'uuid'
@@ -215,6 +215,24 @@ async function fetchCoaList() {
     if (!cached.length) $q.notify({ type: 'warning', message: e })
   }
 }
+const coaDict = computed(() => {
+  const arr = allCoa.value && allCoa.value.length ? allCoa.value : loadCoaFromCache() || []
+  const d = {}
+  for (const c of arr) d[Number(c.id)] = c.nama_akun_ind
+  return d
+})
+
+// Isi nama_coa_* dari kamus berdasarkan id
+const hydrate = (rec) => {
+  const d = coaDict.value
+  const debName = d[Number(rec.id_coa_debet)] ?? rec.nama_coa_debet ?? null
+  const kreName = d[Number(rec.id_coa_kredit)] ?? rec.nama_coa_kredit ?? null
+  return {
+    ...rec,
+    nama_coa_debet: debName,
+    nama_coa_kredit: kreName,
+  }
+}
 function filterCoa(val, update) {
   const q = (val || '').toLowerCase()
   update(() => {
@@ -224,6 +242,12 @@ function filterCoa(val, update) {
     }
     coaList.value = allCoa.value.filter((opt) => opt.nama_akun_ind.toLowerCase().includes(q))
   })
+}
+function onlyCoaName(s) {
+  if (!s) return ''
+  const str = String(s)
+  const i = str.indexOf(' - ')
+  return i >= 0 ? str.slice(i + 3).trim() : str.trim()
 }
 
 /* =========================
@@ -238,6 +262,8 @@ const defaultForm = () => ({
   no_faktur: '',
   id_coa_debet: null,
   id_coa_kredit: null,
+  nama_coa_debet: '',
+  nama_coa_kredit: '',
   tanggal_kredit: getToday(),
   debet: 0,
   kredit: 0,
@@ -307,11 +333,14 @@ const {
     'id',
     'id_coa_debet',
     'id_coa_kredit',
+    'nama_coa_debet',
+    'nama_coa_kredit',
   ],
   numericFields,
   defaultForm,
   buildPayload,
   deriveForForm,
+  hydrate,
   mergeBaseFields: [
     'id_coa_debet',
     'id_coa_kredit',
@@ -327,9 +356,11 @@ const {
    ========================= */
 watch(selectedCoa, (val) => {
   form.id_coa_debet = val?.id ?? null
+  form.nama_coa_debet = onlyCoaName(val?.nama_akun_ind ?? '')
 })
 watch(selectedCoaKredit, (val) => {
   form.id_coa_kredit = val?.id ?? null
+  form.nama_coa_kredit = onlyCoaName(val?.nama_akun_ind ?? '')
 })
 //console.log(form.id_coa_kredit)
 
