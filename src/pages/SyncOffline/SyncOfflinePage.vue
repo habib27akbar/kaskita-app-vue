@@ -331,9 +331,6 @@ function mapCoa(arr = []) {
   }))
 }
 
-/* =========================
-   Full Sync per modul
-   ========================= */
 async function fullSync(key) {
   const conf = SOURCES.find((s) => s.key === key)
   if (!conf) return
