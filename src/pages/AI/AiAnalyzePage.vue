@@ -71,10 +71,11 @@
       </q-card-section>
     </q-card>
 
-    <!-- Charts -->
+    <!-- Content -->
     <div v-if="result" class="q-gutter-md" style="margin-top: 10px">
       <q-card flat bordered class="card-soft">
         <q-card-section class="q-pt-sm">
+          <!-- Ringkasan (cards only) -->
           <TotalsSummary
             v-if="result"
             :labels="labelsBaseFmt"
@@ -83,14 +84,17 @@
             :forecast-in="aiIn?.prediction?.forecast || []"
             :forecast-out="aiOut?.prediction?.forecast || []"
           />
+
           <!-- CASH-IN -->
           <div class="text-subtitle2 q-mb-xs">LSTM — Cash-In (Histori vs Prakiraan)</div>
           <LineCompare
             :labels="labelsInCombinedFmt"
             :seriesA="seriesHistInAligned"
             :seriesB="seriesForecastInAligned"
+            :seriesC="seriesFitInAligned"
             labelA="Cash-In Historis"
             labelB="Cash-In Prediksi"
+            labelC="Cash-In Prediksi (fit)"
             y-label="Cash-In (IDR)"
             :value-formatter="formatIDR"
             :x-formatter="(s) => s"
@@ -102,8 +106,10 @@
             :labels="labelsOutCombinedFmt"
             :seriesA="seriesHistOutAligned"
             :seriesB="seriesForecastOutAligned"
+            :seriesC="seriesFitOutAligned"
             labelA="Cash-Out Historis"
             labelB="Cash-Out Prediksi"
+            labelC="Cash-Out Prediksi (fit)"
             y-label="Cash-Out (IDR)"
             :value-formatter="formatIDR"
             :x-formatter="(s) => s"
@@ -161,6 +167,60 @@ let currentEmail = auth?.user?.email || localStorage.getItem(LAST_EMAIL_KEY) || 
 const form = ref({ months: 12, horizon: 3 })
 const result = ref(null)
 const CACHE_KEY = 'ai:analyze:last:v2'
+// ------- Fitted/Prediksi di area historis (optional) -------
+function getFirstArray(obj, keys = []) {
+  for (const k of keys) {
+    const v = k.split('.').reduce((o, kk) => (o ? o[kk] : undefined), obj)
+    if (Array.isArray(v) && v.length) return v
+  }
+  return []
+}
+
+function pickFitted(aiNode) {
+  if (!aiNode) return []
+  // cari di berbagai kemungkinan nama properti
+  return (
+    getFirstArray(aiNode, [
+      'prediction.fitted',
+      'prediction.fit',
+      'prediction.in_sample',
+      'prediction.insample',
+      'prediction.yhat', // beberapa lib memanggilnya yhat
+      'prediction.backcast',
+      'prediction.history_pred',
+      'prediction.pred_in_hist',
+      'prediction.train_pred',
+      'fitted', // flat
+      'fit',
+      'in_sample',
+      'insample',
+      'yhat',
+    ]) || []
+  )
+}
+
+function alignFittedToHistory(fitted, histLen, fcLen) {
+  // buang NaN, JANGAN ubah null jadi 0
+  const clean = (fitted || []).map((x) => (x == null || Number.isNaN(+x) ? null : +x))
+
+  let a = clean.slice(0, histLen)
+  if (a.length < histLen) {
+    a = Array(histLen - a.length)
+      .fill(null)
+      .concat(a)
+  }
+  return fcLen ? a.concat(Array(fcLen).fill(null)) : a
+}
+
+const fittedInRaw = computed(() => pickFitted(aiIn.value))
+const fittedOutRaw = computed(() => pickFitted(aiOut.value))
+
+const seriesFitInAligned = computed(() =>
+  alignFittedToHistory(fittedInRaw.value, histIn.value.length, forecastLenIn.value),
+)
+const seriesFitOutAligned = computed(() =>
+  alignFittedToHistory(fittedOutRaw.value, histOut.value.length, forecastLenOut.value),
+)
 
 /* ---------- HELPERS ---------- */
 function saveCache(payload) {
@@ -172,8 +232,7 @@ function saveCache(payload) {
 }
 function loadCache() {
   try {
-    const raw = localStorage.getItem(CACHE_KEY)
-    return raw ? JSON.parse(raw).payload : null
+    return JSON.parse(localStorage.getItem(CACHE_KEY))?.payload ?? null
   } catch {
     return null
   }
@@ -194,17 +253,13 @@ const rupiah = new Intl.NumberFormat('id-ID', {
   currency: 'IDR',
   maximumFractionDigits: 0,
 })
-//const kompact = new Intl.NumberFormat('id-ID', { notation: 'compact', maximumFractionDigits: 1 })
 const formatIDR = (v) => rupiah.format(Number(v || 0))
-
 function fmtIDMonth(ym) {
-  // "YYYY-MM" -> "MM/YYYY"
   if (!ym) return ''
   const [Y, M] = ym.split('-')
   return `${M}/${Y}`
 }
 function addMonthsYM(ym, k) {
-  // return "YYYY-MM"
   const [Y, M] = ym.split('-').map(Number)
   const d = new Date(Y, M - 1 + k, 1)
   const mm = String(d.getMonth() + 1).padStart(2, '0')
@@ -229,6 +284,15 @@ async function analyze() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const json = await res.json()
     result.value = json
+    // === DEBUG LOGS DI SINI ===
+    console.log('AI IN prediction:', result.value?.ai?.in?.prediction)
+    console.log('AI OUT prediction:', result.value?.ai?.out?.prediction)
+    console.log('FITTED IN (raw):', result.value?.ai?.in?.prediction?.fitted)
+    console.log('FITTED OUT (raw):', result.value?.ai?.out?.prediction?.fitted)
+    // cek array yang sudah di-align ke chart:
+    console.log('seriesFitInAligned:', seriesFitInAligned.value)
+    console.log('seriesFitOutAligned:', seriesFitOutAligned.value)
+    console.log('labelsBase:', labelsBase.value)
     saveCache(json)
     $q.notify({ message: 'Analisis selesai', color: 'primary' })
   } catch (e) {
@@ -269,7 +333,6 @@ const aiOut = computed(() => result.value?.ai?.out || null)
 const forecastLenIn = computed(() => aiIn.value?.prediction?.forecast?.length || 0)
 const forecastLenOut = computed(() => aiOut.value?.prediction?.forecast?.length || 0)
 
-/* Forecast labels = lanjutkan bulan terakhir */
 const forecastLabelsInRaw = computed(() => {
   const n = forecastLenIn.value
   if (!n) return []
@@ -291,7 +354,6 @@ const labelsOutCombinedFmt = computed(() =>
   labelsBaseFmt.value.concat(forecastLabelsOutRaw.value.map(fmtIDMonth)),
 )
 
-/* Align series */
 const seriesHistInAligned = computed(() =>
   forecastLenIn.value ? histIn.value.concat(Array(forecastLenIn.value).fill(null)) : histIn.value,
 )
@@ -317,19 +379,18 @@ const anomalyIdxIn = computed(() =>
 const anomalyIdxOut = computed(() =>
   (aiOut.value?.anomaly?.anomalies || []).map((a) => +a.index).filter(Number.isFinite),
 )
-/* ---------- RINGKASAN NOMINAL (TANPA GRAFIK) ---------- */ /* ---------- RINGKASAN NOMINAL (TANPA GRAFIK) - RESPONSIF ---------- */
-// ------- TOTALS SUMMARY (Cards Only, No Table) -------
+
+/* ---------- RINGKASAN NOMINAL (CARDS) ---------- */
 const TotalsSummary = defineComponent({
   name: 'TotalsSummary',
   props: {
-    labels: Array, // ["MM/YYYY", ...]
+    labels: Array,
     historyIn: Array,
     historyOut: Array,
     forecastIn: Array,
     forecastOut: Array,
   },
   setup(p) {
-    // formatters
     const fmtIDR = (v) =>
       new Intl.NumberFormat('id-ID', {
         style: 'currency',
@@ -340,15 +401,12 @@ const TotalsSummary = defineComponent({
       new Intl.NumberFormat('id-ID', { notation: 'compact', maximumFractionDigits: 1 }).format(
         Number(v || 0),
       )
-
-    // helpers
-    const sum = (a = []) => a.reduce((s, x) => s + (Number(x) || 0), 0)
-    const last = (a = []) => (a.length ? Number(a[a.length - 1]) : 0)
-    const prev = (a = []) => (a.length > 1 ? Number(a[a.length - 2]) : 0)
+    const sum = (a = []) => a.reduce((s, x) => s + (+x || 0), 0)
+    const last = (a = []) => (a.length ? +a[a.length - 1] : 0)
+    const prev = (a = []) => (a.length > 1 ? +a[a.length - 2] : 0)
     const div0 = (a, b) => (b ? a / b : 0)
-    const mom = (c, pv) => div0(c - pv, Math.abs(pv)) * 100
+    const mom = (c, p) => div0(c - p, Math.abs(p)) * 100
 
-    // historis
     const tIn = computed(() => sum(p.historyIn))
     const tOut = computed(() => sum(p.historyOut))
     const tNet = computed(() => tIn.value - tOut.value)
@@ -356,20 +414,17 @@ const TotalsSummary = defineComponent({
     const avgOut = computed(() => div0(tOut.value, p.historyOut?.length || 0))
     const avgNet = computed(() => avgIn.value - avgOut.value)
 
-    // bulan terakhir
     const lastLbl = computed(() => p.labels?.at(-1) || '—')
     const lastIn = computed(() => last(p.historyIn))
     const lastOut = computed(() => last(p.historyOut))
     const momIn = computed(() => mom(lastIn.value, prev(p.historyIn)))
     const momOut = computed(() => mom(lastOut.value, prev(p.historyOut)))
 
-    // forecast
     const fIn = computed(() => sum(p.forecastIn))
     const fOut = computed(() => sum(p.forecastOut))
     const fNet = computed(() => fIn.value - fOut.value)
     const horiz = computed(() => Math.max(p.forecastIn?.length || 0, p.forecastOut?.length || 0))
 
-    // util chip
     const MoMChip = (val) =>
       h(
         'div',
@@ -377,20 +432,18 @@ const TotalsSummary = defineComponent({
         `${val >= 0 ? '+' : ''}${isFinite(val) ? val.toFixed(1) : '0.0'}% MoM`,
       )
 
-    // 1 card helper
-    const StatCard = (opts) =>
+    const StatCard = (o) =>
       h(QCard, { flat: true, bordered: true, class: 'ts-card q-mb-sm' }, () => [
         h(QCardSection, { class: 'ts-body' }, () => [
           h('div', { class: 'ts-head' }, [
-            h(QIcon, { name: opts.icon, size: '20px', color: opts.iconColor || 'primary' }),
-            h('div', { class: 'ts-title' }, opts.title),
+            h(QIcon, { name: o.icon, size: '20px', color: o.iconColor || 'primary' }),
+            h('div', { class: 'ts-title' }, o.title),
           ]),
-          h('div', { class: ['ts-value', opts.valueClass] }, opts.value),
-          opts.hint ? h('div', { class: 'ts-hint' }, opts.hint) : null,
+          h('div', { class: ['ts-value', o.valueClass] }, o.value),
+          o.hint ? h('div', { class: 'ts-hint' }, o.hint) : null,
         ]),
       ])
 
-    // 2 column mini card (last month)
     const LastCard = ({ title, value, mom, color, icon }) =>
       h(QCard, { flat: true, bordered: true, class: 'ts-card q-mb-sm' }, () => [
         h(QCardSection, { class: 'ts-body' }, () => [
@@ -406,7 +459,7 @@ const TotalsSummary = defineComponent({
 
     return () =>
       h('div', { class: 'ts-grid-wrap' }, [
-        // ROW 1 – KPI Historis
+        // Historis
         h('div', { class: 'ts-grid' }, [
           StatCard({
             icon: 'savings',
@@ -432,8 +485,7 @@ const TotalsSummary = defineComponent({
             valueClass: tNet.value >= 0 ? 'text-positive' : 'text-negative',
           }),
         ]),
-
-        // ROW 2 – Bulan Terakhir
+        // Bulan terakhir
         h('div', { class: 'ts-grid' }, [
           LastCard({
             title: 'Cash-In',
@@ -450,8 +502,7 @@ const TotalsSummary = defineComponent({
             icon: 'trending_down',
           }),
         ]),
-
-        // ROW 3 – Ringkasan Prakiraan
+        // Forecast
         h('div', { class: 'row items-center justify-between q-mt-sm q-mb-xs' }, [
           h('div', { class: 'text-subtitle2' }, 'Ringkasan Prakiraan'),
           h('div', { class: 'text-caption text-grey-7' }, `${horiz.value} bulan ke depan`),
@@ -483,37 +534,34 @@ const TotalsSummary = defineComponent({
   },
 })
 
-/* ---------- CHART COMPONENTS (SVG) ---------- */
-/* 1) LineCompare: histori vs prediksi (interaktif + tooltip) */
+/* ---------- CHART COMPONENTS (SVG) ---------- */ /* ---------- CHART COMPONENTS (SVG) ---------- */
 const LineCompare = defineComponent({
   name: 'LineCompare',
   props: {
     labels: Array,
-    seriesA: Array,
-    seriesB: Array,
-    /* width/height hanya default; akan di-override oleh container */
+    seriesA: Array, // histori (biru)
+    seriesB: Array, // forecast (merah dashed)
+    seriesC: Array, // fitted/in-sample (oranye)  ← NEW
     width: { type: Number, default: 900 },
     height: { type: Number, default: 340 },
     pad: { type: Number, default: 56 },
     labelA: { type: String, default: 'Seri A' },
     labelB: { type: String, default: 'Seri B' },
+    labelC: { type: String, default: 'Seri C (fit)' }, // ← NEW
     yLabel: { type: String, default: 'Nilai' },
     title: { type: String, default: '' },
     valueFormatter: { type: Function, default: (v) => String(v) },
     xFormatter: { type: Function, default: (s) => s },
   },
   setup(p) {
-    const root = ref(null)
-    const W = ref(p.width)
-    const H = ref(p.height)
-    const isXS = ref(false)
-
-    // Resize observer → set W/H & breakpoint (xs)
+    const root = ref(null),
+      W = ref(p.width),
+      H = ref(p.height),
+      isXS = ref(false)
     onMounted(() => {
       const ro = new ResizeObserver(([entry]) => {
         const w = Math.max(280, Math.floor(entry.contentRect.width))
         W.value = w
-        // tinggi proporsional (ringan), beda utk xs
         H.value = w < 480 ? 260 : p.height
         isXS.value = w < 480
       })
@@ -521,11 +569,14 @@ const LineCompare = defineComponent({
     })
 
     const take = (arr) =>
-      (arr || [])
-        .filter((v) => v != null)
-        .map(Number)
-        .filter(Number.isFinite)
-    const values = computed(() => [...take(p.seriesA), ...take(p.seriesB)])
+      (arr || []).filter((v) => v !== null && v !== undefined && Number.isFinite(+v)).map(Number)
+
+    // --- skala termasuk C ---
+    const values = computed(() => [
+      ...take(p.seriesA),
+      ...take(p.seriesB),
+      ...take(p.seriesC || []),
+    ])
     const minV = computed(() => (values.value.length ? Math.min(...values.value) : 0))
     const maxV = computed(() => (values.value.length ? Math.max(...values.value) : 1))
     const span = computed(() => Math.max(1e-9, maxV.value - minV.value))
@@ -556,17 +607,19 @@ const LineCompare = defineComponent({
       return d
     }
 
-    // fewer ticks on small screens
+    // ticks
+    const nX = computed(() =>
+      Math.max(p.labels.length, p.seriesA.length, p.seriesB.length, (p.seriesC || []).length),
+    )
     const yTicks = computed(() => {
-      const steps = isXS.value ? 4 : 5
-      const arr = []
+      const steps = isXS.value ? 4 : 5,
+        arr = []
       for (let k = 0; k <= steps; k++) {
         const val = minV.value + (span.value * k) / steps
         arr.push({ val, y: y(val) })
       }
       return arr
     })
-    const nX = computed(() => Math.max(p.labels.length, p.seriesA.length, p.seriesB.length))
     const xTicks = computed(() => {
       const n = nX.value
       if (!n) return []
@@ -578,18 +631,18 @@ const LineCompare = defineComponent({
     const pts = (arr) => {
       const n = arr.length
       return arr
-        .map((v, i) => {
-          if (v == null || !Number.isFinite(+v)) return null
-          return { i, v: +v, cx: x(i, n), cy: y(+v) }
-        })
+        .map((v, i) =>
+          v == null || !Number.isFinite(+v) ? null : { i, v: +v, cx: x(i, n), cy: y(+v) },
+        )
         .filter(Boolean)
     }
     const pointsA = computed(() => pts(p.seriesA))
     const pointsB = computed(() => pts(p.seriesB))
+    const pointsC = computed(() => pts(p.seriesC || [])) // ← NEW
 
-    // tooltip (mouse + touch)
+    // tooltip
     const tip = ref({ show: false, left: 0, top: 0, label: '', value: '' })
-    function setTip(evt, label, val) {
+    const setTip = (evt, label, val) => {
       const rect = root.value?.getBoundingClientRect()
       tip.value = {
         show: true,
@@ -600,11 +653,10 @@ const LineCompare = defineComponent({
       }
     }
     const hideTip = () => (tip.value.show = false)
-    const notify = (label, val) =>
-      $q.notify({ color: 'primary', message: `${label} • ${p.valueFormatter(val)}` })
 
-    const colA = '#1976D2',
-      colB = '#E53935',
+    const colA = '#1976D2', // biru
+      colB = '#E53935', // merah (forecast)
+      colC = '#FB8C00', // oranye (fitted)  ← NEW
       grid = '#ECEFF1',
       axis = '#B0BEC5'
     const kompact = new Intl.NumberFormat('id-ID', {
@@ -644,37 +696,7 @@ const LineCompare = defineComponent({
           'svg',
           { viewBox: `0 0 ${W.value} ${H.value}`, width: '100%', height: H.value, role: 'img' },
           [
-            // Title
-            p.title
-              ? h(
-                  'text',
-                  {
-                    x: W.value / 2,
-                    y: isXS.value ? 18 : 22,
-                    'text-anchor': 'middle',
-                    'font-size': isXS.value ? 13 : 15,
-                    'font-weight': '700',
-                    fill: '#263238',
-                  },
-                  p.title,
-                )
-              : null,
-
-            // Y label
-            h(
-              'text',
-              {
-                x: 14,
-                y: H.value / 2,
-                transform: `rotate(-90 14 ${H.value / 2})`,
-                'text-anchor': 'middle',
-                'font-size': isXS.value ? 11 : 12,
-                fill: '#607D8B',
-              },
-              p.yLabel,
-            ),
-
-            // frame
+            // label Y, grid, ticks … (tidak berubah)
             h('rect', {
               x: pad.value,
               y: H.value - pad.value - innerH.value,
@@ -685,8 +707,6 @@ const LineCompare = defineComponent({
               'stroke-width': 1,
               rx: 8,
             }),
-
-            // grid Y
             ...yTicks.value.map((t) =>
               h('g', {}, [
                 h('line', {
@@ -709,8 +729,6 @@ const LineCompare = defineComponent({
                 ),
               ]),
             ),
-
-            // X ticks
             ...xTicks.value.map((i) => {
               const n = nX.value,
                 X = x(i, n),
@@ -738,7 +756,35 @@ const LineCompare = defineComponent({
               ])
             }),
 
-            // series A
+            // --- Garis FITTED (C) dulu, tipis & semi-transparent ---
+            p.seriesC && take(p.seriesC).length
+              ? h('path', {
+                  d: pathFor(p.seriesC),
+                  fill: 'none',
+                  stroke: colC,
+                  'stroke-width': 2.5,
+                  'stroke-linecap': 'round',
+                  'stroke-linejoin': 'round',
+                  opacity: 0.9,
+                })
+              : null,
+            ...(pointsC.value || []).map((pt) =>
+              h('circle', {
+                cx: pt.cx,
+                cy: pt.cy,
+                r: 3,
+                fill: '#fff',
+                stroke: colC,
+                'stroke-width': 2,
+                onMouseenter: (e) =>
+                  setTip(e, p.xFormatter(p.labels?.[pt.i] ?? `#${pt.i + 1}`), pt.v),
+                onMousemove: (e) =>
+                  setTip(e, p.xFormatter(p.labels?.[pt.i] ?? `#${pt.i + 1}`), pt.v),
+                onMouseleave: hideTip,
+              }),
+            ),
+
+            // --- Garis HISTORIS (A) ---
             h('path', {
               d: pathFor(p.seriesA),
               fill: 'none',
@@ -760,17 +806,10 @@ const LineCompare = defineComponent({
                 onMousemove: (e) =>
                   setTip(e, p.xFormatter(p.labels?.[pt.i] ?? `#${pt.i + 1}`), pt.v),
                 onMouseleave: hideTip,
-                onTouchstart: (e) =>
-                  setTip(e, p.xFormatter(p.labels?.[pt.i] ?? `#${pt.i + 1}`), pt.v),
-                onTouchmove: (e) =>
-                  setTip(e, p.xFormatter(p.labels?.[pt.i] ?? `#${pt.i + 1}`), pt.v),
-                onTouchend: hideTip,
-                onClick: () => notify(p.xFormatter(p.labels?.[pt.i] ?? `#${pt.i + 1}`), pt.v),
-                style: 'cursor:pointer',
               }),
             ),
 
-            // series B (dashed)
+            // --- Garis FORECAST (B) ---
             h('path', {
               d: pathFor(p.seriesB),
               fill: 'none',
@@ -793,22 +832,18 @@ const LineCompare = defineComponent({
                 onMousemove: (e) =>
                   setTip(e, p.xFormatter(p.labels?.[pt.i] ?? `#${pt.i + 1}`), pt.v),
                 onMouseleave: hideTip,
-                onTouchstart: (e) =>
-                  setTip(e, p.xFormatter(p.labels?.[pt.i] ?? `#${pt.i + 1}`), pt.v),
-                onTouchmove: (e) =>
-                  setTip(e, p.xFormatter(p.labels?.[pt.i] ?? `#${pt.i + 1}`), pt.v),
-                onTouchend: hideTip,
-                onClick: () => notify(p.xFormatter(p.labels?.[pt.i] ?? `#${pt.i + 1}`), pt.v),
-                style: 'cursor:pointer',
               }),
             ),
           ],
         ),
 
-        // Legend overlay – pindah ke bawah & center saat mobile
+        // Legend (tambah item C kalau ada data)
         h('div', { class: ['legend-card', isXS.value ? 'legend-bottom' : 'legend-top-left'] }, [
           legendItem(p.labelA, colA, false),
           legendItem(p.labelB, colB, true),
+          p.seriesC && take(p.seriesC).length
+            ? legendItem(p.labelC || 'Prediksi (fit)', colC, false)
+            : null,
         ]),
 
         tip.value.show
@@ -828,7 +863,6 @@ const LineCompare = defineComponent({
   },
 })
 
-/* 2) LineAnomaly: garis single + titik anomali */
 const LineAnomaly = defineComponent({
   name: 'LineAnomaly',
   props: {
@@ -848,15 +882,14 @@ const LineAnomaly = defineComponent({
       H = ref(p.height),
       isXS = ref(false)
     onMounted(() => {
-      const ro = new ResizeObserver(([entry]) => {
-        const w = Math.max(280, Math.floor(entry.contentRect.width))
+      const ro = new ResizeObserver(([e]) => {
+        const w = Math.max(280, Math.floor(e.contentRect.width))
         W.value = w
         H.value = w < 480 ? 220 : p.height
         isXS.value = w < 480
       })
       if (root.value) ro.observe(root.value)
     })
-
     const vals = computed(() => (p.series || []).map((v) => (v == null ? null : Number(v))))
     const finite = computed(() => vals.value.filter((v) => v != null && Number.isFinite(v)))
     const minV = computed(() => (finite.value.length ? Math.min(...finite.value) : 0))
@@ -866,7 +899,6 @@ const LineAnomaly = defineComponent({
     const x = (i, n) => pad.value + (i / Math.max(1, n - 1)) * (W.value - 2 * pad.value)
     const y = (v) =>
       H.value - pad.value - ((v - minV.value) / span.value) * (H.value - 2 * pad.value)
-
     const pathD = computed(() => {
       const a = vals.value,
         n = a.length
@@ -890,27 +922,27 @@ const LineAnomaly = defineComponent({
       const a = vals.value,
         n = a.length
       return a
-        .map((v, i) => {
-          if (v == null || !Number.isFinite(v)) return null
-          return {
-            i,
-            v,
-            label: p.labels?.[i] ?? `#${i + 1}`,
-            cx: x(i, n),
-            cy: y(v),
-            anomaly: p.anomalyIdx.includes(i),
-          }
-        })
+        .map((v, i) =>
+          v == null || !Number.isFinite(v)
+            ? null
+            : {
+                i,
+                v,
+                label: p.labels?.[i] ?? `#${i + 1}`,
+                cx: x(i, n),
+                cy: y(v),
+                anomaly: p.anomalyIdx.includes(i),
+              },
+        )
         .filter(Boolean)
     })
-
     const tip = ref({ show: false, left: 0, top: 0, label: '', value: '' })
     const setTip = (e, pt) => {
-      const rect = root.value?.getBoundingClientRect()
+      const r = root.value?.getBoundingClientRect()
       tip.value = {
         show: true,
-        left: (e.clientX ?? e.touches?.[0]?.clientX) - (rect?.left ?? 0) + 10,
-        top: (e.clientY ?? e.touches?.[0]?.clientY) - (rect?.top ?? 0) + 10,
+        left: (e.clientX ?? e.touches?.[0]?.clientX) - (r?.left ?? 0) + 10,
+        top: (e.clientY ?? e.touches?.[0]?.clientY) - (r?.top ?? 0) + 10,
         label: p.labelFormatter(pt.label),
         value: p.valueFormatter(pt.v),
       }
@@ -921,7 +953,6 @@ const LineAnomaly = defineComponent({
         color: 'primary',
         message: `${p.labelFormatter(pt.label)} • ${p.valueFormatter(pt.v)}`,
       })
-
     return () =>
       h('div', { ref: root, class: 'chart shadow-sm', style: 'position:relative' }, [
         h('svg', { viewBox: `0 0 ${W.value} ${H.value}`, width: '100%', height: H.value }, [
@@ -989,6 +1020,8 @@ const LineAnomaly = defineComponent({
 .card-soft {
   border-radius: 14px;
 }
+
+/* ===== Chart wrapper ===== */
 .chart {
   background: #fff;
   border: 1px solid #e0e0e0;
@@ -998,12 +1031,56 @@ const LineAnomaly = defineComponent({
 .shadow-sm {
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.05);
 }
+
+/* Legend (LineCompare) */
+.legend-card {
+  position: absolute;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  background: #fff;
+  border: 1px solid #e0e0e0;
+  border-radius: 10px;
+  padding: 6px 10px;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.06);
+}
+.legend-top-left {
+  left: 14px;
+  top: 10px;
+}
+.legend-bottom {
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 8px;
+}
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.legend-text {
+  font-size: 12px;
+  color: #37474f;
+}
+@media (max-width: 480px) {
+  .legend-card {
+    gap: 8px;
+    padding: 6px 8px;
+  }
+  .legend-text {
+    font-size: 11px;
+  }
+}
+
 .legend .dot {
   width: 10px;
   height: 10px;
   border-radius: 50%;
   display: inline-block;
 }
+
+/* Tooltip */
 .if-tooltip {
   background: rgba(33, 33, 33, 0.96);
   color: #fff;
@@ -1019,50 +1096,8 @@ const LineAnomaly = defineComponent({
 .if-tooltip-value {
   font-weight: 700;
 }
-.kpi-card {
-  min-height: 118px;
-}
-.mini-stat {
-  background: #fff;
-  border: 1px solid #e0e0e0;
-  border-radius: 12px;
-  padding: 10px 12px;
-}
-.mini-stat__label {
-  font-size: 12px;
-  color: #607d8b;
-}
-.mini-stat__value {
-  font-size: 16px;
-  font-weight: 700;
-  margin-top: 2px;
-}
-.mini-stat__hint {
-  font-size: 12px;
-  color: #90a4ae;
-}
-.mini-stat.positive .mini-stat__value {
-  color: #2e7d32;
-}
-.mini-stat.negative .mini-stat__value {
-  color: #c62828;
-}
 
-/* table */
-.w-100 {
-  width: 100%;
-}
-.overflow-auto {
-  overflow: auto;
-}
-/* Wrapper spacing */
-.summary-wrapper {
-  margin-bottom: 8px;
-}
-/* ===== Layout ringkasan ===== */
-.summary {
-  margin-bottom: 6px;
-}
+/* ===== TotalsSummary (cards) ===== */
 .ts-grid-wrap {
   margin-bottom: 8px;
 }
@@ -1070,6 +1105,16 @@ const LineAnomaly = defineComponent({
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 16px;
+}
+@media (max-width: 1024px) {
+  .ts-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 640px) {
+  .ts-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .ts-card {
@@ -1101,7 +1146,7 @@ const LineAnomaly = defineComponent({
   margin-top: 2px;
 }
 
-/* small MoM chip */
+/* MoM chip */
 .chip {
   font-size: 11px;
   padding: 3px 8px;
