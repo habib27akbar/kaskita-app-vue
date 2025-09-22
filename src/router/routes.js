@@ -119,6 +119,11 @@ const routes = [
         component: () => import('pages/AI/AiAnalyzePage.vue'),
         meta: { requiresAuth: true },
       },
+      {
+        path: '/anomaly-analyze',
+        component: () => import('pages/AI/AnomalyPage.vue'),
+        meta: { requiresAuth: true },
+      },
     ],
   },
 

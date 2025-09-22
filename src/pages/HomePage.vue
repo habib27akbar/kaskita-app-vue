@@ -68,6 +68,7 @@ const menuItems = [
   },
   { title: 'Jurnal Umum', icon: 'receipt_long', color: '#66BB6A', route: '/jurnal-umum' },
   { title: 'Prediksi AI', icon: 'bar_chart', color: '#29B6F6', route: '/ai-analyze' },
+  { title: 'Deteksi Anomali', icon: 'insights', color: '#29B6F6', route: '/anomaly-analyze' },
   { title: 'Sync', icon: 'autorenew', color: '#66BB6A', route: '/sync' },
   { title: 'Sync Offline', icon: 'autorenew', color: '#66BB6A', route: '/sync-offline' },
 ]
