@@ -134,7 +134,21 @@ const LAST_EMAIL_KEY = 'last_user_email'
 const authRaw = localStorage.getItem('auth_user')
 const auth = authRaw ? JSON.parse(authRaw) : null
 let currentEmail = auth?.user?.email || localStorage.getItem(LAST_EMAIL_KEY) || 'local'
-const form = ref({ months: 12, horizon: 3 })
+const FORM_KEY = 'ai:analyze:form'
+let saved = null
+try {
+  saved = JSON.parse(localStorage.getItem(FORM_KEY))
+} catch (e) {
+  console.log(e)
+}
+const form = ref({ months: saved?.months ?? 12, horizon: saved?.horizon ?? 3 })
+watch(
+  form,
+  (v) => {
+    localStorage.setItem(FORM_KEY, JSON.stringify(v))
+  },
+  { deep: true },
+)
 const result = ref(null)
 const CACHE_KEY = 'ai:analyze:last:v2'
 // ------- Fitted/Prediksi di area historis (optional) -------
@@ -254,15 +268,8 @@ async function analyze() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const json = await res.json()
     result.value = json
-    // === DEBUG LOGS DI SINI ===
-    console.log('AI IN prediction:', result.value?.ai?.in?.prediction)
-    console.log('AI OUT prediction:', result.value?.ai?.out?.prediction)
-    console.log('FITTED IN (raw):', result.value?.ai?.in?.prediction?.fitted)
-    console.log('FITTED OUT (raw):', result.value?.ai?.out?.prediction?.fitted)
-    // cek array yang sudah di-align ke chart:
-    console.log('seriesFitInAligned:', seriesFitInAligned.value)
-    console.log('seriesFitOutAligned:', seriesFitOutAligned.value)
-    console.log('labelsBase:', labelsBase.value)
+    console.log(saved)
+
     saveCache(json)
     $q.notify({ message: 'Analisis selesai', color: 'primary' })
   } catch (e) {

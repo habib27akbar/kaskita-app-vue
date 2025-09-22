@@ -122,7 +122,21 @@ const LAST_EMAIL_KEY = 'last_user_email'
 const authRaw = localStorage.getItem('auth_user')
 const auth = authRaw ? JSON.parse(authRaw) : null
 let currentEmail = auth?.user?.email || localStorage.getItem(LAST_EMAIL_KEY) || 'local'
-const form = ref({ months: 12, horizon: 3 })
+const FORM_KEY = 'anomaly:analyze:form'
+let saved = null
+try {
+  saved = JSON.parse(localStorage.getItem(FORM_KEY))
+} catch (e) {
+  console.log(e)
+}
+const form = ref({ months: saved?.months ?? 12, horizon: saved?.horizon ?? 3 })
+watch(
+  form,
+  (v) => {
+    localStorage.setItem(FORM_KEY, JSON.stringify(v))
+  },
+  { deep: true },
+)
 const result = ref(null)
 const CACHE_KEY = 'ai:analyze:last:v2'
 // ------- Fitted/Prediksi di area historis (optional) -------
