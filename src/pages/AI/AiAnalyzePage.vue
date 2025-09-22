@@ -8,9 +8,7 @@
         </q-badge>
       </div>
       <div class="col">
-        <div class="text-caption text-grey-7 ellipsis">
-          Analisis LSTM & Isolation Forest — Cash-In / Cash-Out
-        </div>
+        <div class="text-caption text-grey-7 ellipsis">Analisis LSTM — Cash-In / Cash-Out</div>
       </div>
       <div class="col-auto">
         <q-btn flat dense round icon="refresh" :disable="loading" @click="reloadFromCache" />
@@ -114,34 +112,6 @@
             :value-formatter="formatIDR"
             :x-formatter="(s) => s"
           />
-
-          <!-- ANOMALI IN -->
-          <div class="text-subtitle2 q-mt-lg q-mb-xs">Isolation Forest — Anomali Cash-In</div>
-          <LineAnomaly
-            :labels="labelsBaseFmt"
-            :series="history_in"
-            :anomalyIdx="anomalyIdxIn"
-            label="Cash-In"
-            :value-formatter="formatIDR"
-            :label-formatter="(s) => s"
-          />
-          <div class="text-caption text-grey-7 q-mt-xs">
-            Titik merah = anomali terdeteksi (cash-in)
-          </div>
-
-          <!-- ANOMALI OUT -->
-          <div class="text-subtitle2 q-mt-lg q-mb-xs">Isolation Forest — Anomali Cash-Out</div>
-          <LineAnomaly
-            :labels="labelsBaseFmt"
-            :series="history_out"
-            :anomalyIdx="anomalyIdxOut"
-            label="Cash-Out"
-            :value-formatter="formatIDR"
-            :label-formatter="(s) => s"
-          />
-          <div class="text-caption text-grey-7 q-mt-xs">
-            Titik merah = anomali terdeteksi (cash-out)
-          </div>
         </q-card-section>
       </q-card>
     </div>
@@ -372,13 +342,6 @@ const seriesForecastOutAligned = computed(() => {
   const h = histOut.value.length
   return h ? Array(h).fill(null).concat(fc) : fc
 })
-
-const anomalyIdxIn = computed(() =>
-  (aiIn.value?.anomaly?.anomalies || []).map((a) => +a.index).filter(Number.isFinite),
-)
-const anomalyIdxOut = computed(() =>
-  (aiOut.value?.anomaly?.anomalies || []).map((a) => +a.index).filter(Number.isFinite),
-)
 
 /* ---------- RINGKASAN NOMINAL (CARDS) ---------- */
 const TotalsSummary = defineComponent({
@@ -846,158 +809,6 @@ const LineCompare = defineComponent({
             : null,
         ]),
 
-        tip.value.show
-          ? h(
-              'div',
-              {
-                class: 'if-tooltip',
-                style: `position:absolute; left:${tip.value.left}px; top:${tip.value.top}px;`,
-              },
-              [
-                h('div', { class: 'if-tooltip-label' }, tip.value.label),
-                h('div', { class: 'if-tooltip-value' }, tip.value.value),
-              ],
-            )
-          : null,
-      ])
-  },
-})
-
-const LineAnomaly = defineComponent({
-  name: 'LineAnomaly',
-  props: {
-    labels: Array,
-    series: Array,
-    anomalyIdx: Array,
-    width: { type: Number, default: 900 },
-    height: { type: Number, default: 260 },
-    pad: { type: Number, default: 40 },
-    label: { type: String, default: 'Series' },
-    valueFormatter: { type: Function, default: (v) => String(v) },
-    labelFormatter: { type: Function, default: (s) => s },
-  },
-  setup(p) {
-    const root = ref(null),
-      W = ref(p.width),
-      H = ref(p.height),
-      isXS = ref(false)
-    onMounted(() => {
-      const ro = new ResizeObserver(([e]) => {
-        const w = Math.max(280, Math.floor(e.contentRect.width))
-        W.value = w
-        H.value = w < 480 ? 220 : p.height
-        isXS.value = w < 480
-      })
-      if (root.value) ro.observe(root.value)
-    })
-    const vals = computed(() => (p.series || []).map((v) => (v == null ? null : Number(v))))
-    const finite = computed(() => vals.value.filter((v) => v != null && Number.isFinite(v)))
-    const minV = computed(() => (finite.value.length ? Math.min(...finite.value) : 0))
-    const maxV = computed(() => (finite.value.length ? Math.max(...finite.value) : 1))
-    const span = computed(() => Math.max(1e-9, maxV.value - minV.value))
-    const pad = computed(() => (isXS.value ? 32 : p.pad))
-    const x = (i, n) => pad.value + (i / Math.max(1, n - 1)) * (W.value - 2 * pad.value)
-    const y = (v) =>
-      H.value - pad.value - ((v - minV.value) / span.value) * (H.value - 2 * pad.value)
-    const pathD = computed(() => {
-      const a = vals.value,
-        n = a.length
-      if (!n) return ''
-      let d = '',
-        pen = false
-      for (let i = 0; i < n; i++) {
-        const v = a[i]
-        if (v == null || !Number.isFinite(v)) {
-          pen = false
-          continue
-        }
-        const X = x(i, n),
-          Y = y(v)
-        d += pen ? ` L ${X} ${Y}` : `M ${X} ${Y}`
-        pen = true
-      }
-      return d
-    })
-    const points = computed(() => {
-      const a = vals.value,
-        n = a.length
-      return a
-        .map((v, i) =>
-          v == null || !Number.isFinite(v)
-            ? null
-            : {
-                i,
-                v,
-                label: p.labels?.[i] ?? `#${i + 1}`,
-                cx: x(i, n),
-                cy: y(v),
-                anomaly: p.anomalyIdx.includes(i),
-              },
-        )
-        .filter(Boolean)
-    })
-    const tip = ref({ show: false, left: 0, top: 0, label: '', value: '' })
-    const setTip = (e, pt) => {
-      const r = root.value?.getBoundingClientRect()
-      tip.value = {
-        show: true,
-        left: (e.clientX ?? e.touches?.[0]?.clientX) - (r?.left ?? 0) + 10,
-        top: (e.clientY ?? e.touches?.[0]?.clientY) - (r?.top ?? 0) + 10,
-        label: p.labelFormatter(pt.label),
-        value: p.valueFormatter(pt.v),
-      }
-    }
-    const hideTip = () => (tip.value.show = false)
-    const notify = (pt) =>
-      $q.notify({
-        color: 'primary',
-        message: `${p.labelFormatter(pt.label)} • ${p.valueFormatter(pt.v)}`,
-      })
-    return () =>
-      h('div', { ref: root, class: 'chart shadow-sm', style: 'position:relative' }, [
-        h('svg', { viewBox: `0 0 ${W.value} ${H.value}`, width: '100%', height: H.value }, [
-          h('rect', {
-            x: pad.value,
-            y: pad.value / 2,
-            width: W.value - 2 * pad.value,
-            height: H.value - 1.5 * pad.value,
-            fill: '#FAFAFA',
-            stroke: '#B0BEC5',
-            rx: 8,
-          }),
-          h('path', {
-            d: pathD.value,
-            fill: 'none',
-            stroke: '#455A64',
-            'stroke-width': 3,
-            'stroke-linecap': 'round',
-            'stroke-linejoin': 'round',
-          }),
-          ...points.value.map((pt) =>
-            h('circle', {
-              cx: pt.cx,
-              cy: pt.cy,
-              r: pt.anomaly ? 5 : 3.5,
-              fill: pt.anomaly ? '#D32F2F' : '#1976D2',
-              stroke: '#fff',
-              'stroke-width': pt.anomaly ? 2 : 1.2,
-              onMouseenter: (e) => setTip(e, pt),
-              onMousemove: (e) => setTip(e, pt),
-              onMouseleave: hideTip,
-              onTouchstart: (e) => setTip(e, pt),
-              onTouchmove: (e) => setTip(e, pt),
-              onTouchend: hideTip,
-              onClick: () => notify(pt),
-              style: 'cursor:pointer',
-            }),
-          ),
-        ]),
-        h('div', { class: 'legend row items-center q-gutter-sm q-mt-xs' }, [
-          h('span', { class: 'dot', style: 'background:#455A64' }),
-          h('span', null, p.label),
-          h('span', { class: 'dot', style: 'background:#D32F2F' }),
-          h('span', null, 'Anomali'),
-        ]),
         tip.value.show
           ? h(
               'div',
