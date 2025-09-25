@@ -62,9 +62,10 @@
       </q-inner-loading>
 
       <q-pagination
-        v-if="!loading && pagination.total > pagination.perPage"
+        v-if="!loading && maxPages > 1"
         v-model="pagination.page"
-        :max="Math.ceil(pagination.total / pagination.perPage)"
+        :max="maxPages"
+        :max-pages="10"
         @update:model-value="fetchData"
         color="primary"
         class="q-mt-md"
@@ -172,15 +173,32 @@
     </q-dialog>
   </q-page>
 </template>
-
 <script setup>
-import { computed } from 'vue'
+import { computed, watch, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { v4 as uuidv4 } from 'uuid'
 import { useOfflineCrud } from '@/composables/useOfflineCrud'
+import { API_URL } from 'boot/api' // sesuaikan dengan proyekmu
 
+/* =========================
+   Auth/email (opsional)
+========================= */
+const LAST_EMAIL_KEY = 'last_user_email'
+const authRaw = localStorage.getItem('auth_user')
+const auth = authRaw ? JSON.parse(authRaw) : null
+const currentEmail = auth?.user?.email || localStorage.getItem(LAST_EMAIL_KEY) || ''
+
+/* =========================
+   Router
+========================= */
 const router = useRouter()
+function goToPrintPage() {
+  router.push('/pembelian/cetak')
+}
 
+/* =========================
+   Util & Konstanta
+========================= */
 const getToday = () => {
   const d = new Date()
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
@@ -193,7 +211,6 @@ const options = [
   { label: '12%', value: 12 },
 ]
 
-// ----- KONFIGURASI KHUSUS PEMBELIAN -----
 const numericFields = [
   'persediaan_barang',
   'biaya_angkut',
@@ -202,18 +219,17 @@ const numericFields = [
   'hutang_dagang',
 ]
 
-// deriveForForm: set nilai turunan real-time (ppn_masukan)
-// (hutang_dagang final dihitung di buildPayload)
+/* =========================
+   Derivasi Form (UX live)
+========================= */
 const deriveForForm = (form) => {
   const pembelian = Number(form.persediaan_barang) || 0
   const biayaAngkut = Number(form.biaya_angkut) || 0
   const persen = Number(form.ppn_persen) || 0
   const discount = Number(form.discount) || 0
 
-  // Hitung PPN Masukan
   form.ppn_masukan = Math.round((pembelian * persen) / 100)
 
-  // Hitung Hutang Dagang (setelah PPN + biaya angkut - diskon)
   const totalSebelumDiskon = pembelian + biayaAngkut + form.ppn_masukan
   const diskonRupiah = (discount / 100) * totalSebelumDiskon
   form.hutang_dagang = Math.round(totalSebelumDiskon - diskonRupiah)
@@ -235,7 +251,6 @@ const defaultForm = () => ({
   discount: 0,
 })
 
-// buildPayload pakai rumus aman dari kode kamu
 const buildPayload = (src) => {
   const safeNum = (v) => {
     if (v == null) return 0
@@ -262,12 +277,15 @@ const buildPayload = (src) => {
     ppn_persen: persenPPN,
     ppn_masukan: ppnMasukan,
     persediaan_barang: pembelian,
-    hutang_dagang: hutangHitung, // <-- hasil compute
+    hutang_dagang: hutangHitung,
     discount: discount,
     local_id: src.local_id || uuidv4(),
   }
 }
 
+/* =========================
+   Composable CRUD
+========================= */
 const {
   loading,
   saving,
@@ -306,11 +324,140 @@ const {
   numericFields,
   defaultForm,
   buildPayload,
-  mergeBaseFields: ['persediaan_barang', 'biaya_angkut', 'ppn_persen', 'discount'], // sesuai logika dedupe kamu
+  mergeBaseFields: ['persediaan_barang', 'biaya_angkut', 'ppn_persen', 'discount'],
   deriveForForm,
 })
 
-// Field tampil rupiah (hutang_dagang ditampilkan dari rumus live untuk UX)
+/* =========================
+   Pagination helpers
+========================= */
+const coercePaginationNumbers = () => {
+  pagination.page = Math.max(1, Number(pagination.page ?? 1))
+  pagination.perPage = Math.max(1, Number(pagination.perPage ?? 10))
+  pagination.total = Number(pagination.total ?? 0)
+  if (!pagination.total) pagination.total = localTotal.value
+}
+
+// total dari list lokal (setelah filter), fallback aman
+const localTotal = computed(() => {
+  const arr = Array.isArray(pembelianList.value) ? pembelianList.value : []
+  return arr.length
+})
+
+const effectivePerPage = computed(() => Math.max(1, Number(pagination.perPage || 10)))
+
+// Apakah “masih ada next page”? Heuristik: kalau 1 halaman penuh, asumsikan ada lanjutannya.
+// (berlaku saat total meta gagal terbaca di APK / offline)
+const hasLikelyNext = computed(() => {
+  const per = effectivePerPage.value
+  const len = localTotal.value
+  return len >= per
+})
+
+const effectiveTotal = computed(() => {
+  const t = Number(pagination.total || 0)
+  // Jika server kasih total (>0), pakai itu
+  if (t > 0) return t
+  // Kalau tidak ada total, fallback ke len halaman saat ini
+  return localTotal.value
+})
+
+const maxPages = computed(() => {
+  const per = effectivePerPage.value
+  let base = Math.max(1, Math.ceil(effectiveTotal.value / per))
+  // Jika base masih 1 (karena cuma tahu 1 halaman),
+  // tapi halaman sekarang penuh, naikkan ke page+1 supaya pagination tampil.
+  if (base <= 1 && hasLikelyNext.value) {
+    base = Math.max(base, Number(pagination.value?.page || 1) + 1)
+  }
+  return base
+})
+
+/* =========================
+   META fetch (baca total dari body paginate Laravel)
+========================= */
+function buildListUrl() {
+  const base = `${API_URL}/pembelian` // sesuaikan path API
+  const params = new URLSearchParams({
+    page: String(pagination.page || 1),
+    perPage: String(pagination.perPage || 10),
+    search: String(searchQuery.value || ''),
+    email: currentEmail || '',
+  })
+  // optional sorting
+  if (sort?.by) {
+    params.set('sortBy', String(sort.by))
+    params.set('sortDesc', String(!!sort.descending))
+  }
+  return `${base}?${params.toString()}`
+}
+
+async function fetchMetaWithFetch() {
+  try {
+    const res = await fetch(buildListUrl(), { headers: { Accept: 'application/json' } })
+    if (!res.ok) return { total: 0, perPage: 0, page: 0, lastPage: 0 }
+    const j = await res.json()
+    // bentuk default paginate Laravel
+    return {
+      total: Number(j?.total || j?.meta?.total || 0),
+      perPage: Number(j?.per_page || j?.perPage || 0),
+      page: Number(j?.current_page || j?.page || 0),
+      lastPage: Number(j?.last_page || j?.lastPage || 0),
+    }
+  } catch {
+    return { total: 0, perPage: 0, page: 0, lastPage: 0 }
+  }
+}
+
+/* =========================
+   Load flow
+========================= */
+const load = async () => {
+  await fetchData()
+
+  // coba meta server, tapi tak wajib
+  const meta = await fetchMetaWithFetch().catch(() => ({ total: 0, perPage: 0, page: 0 }))
+
+  coercePaginationNumbers()
+
+  if (meta.perPage) pagination.perPage = meta.perPage
+  if (meta.page) pagination.page = meta.page
+  if (meta.total) pagination.total = meta.total
+
+  // fallback tegas (TANPA .value)
+  if (!Number(pagination.total)) {
+    pagination.total = localTotal.value
+  }
+}
+
+/* =========================
+   Hooks & Watchers
+========================= */
+onMounted(async () => {
+  coercePaginationNumbers()
+  await load()
+})
+
+watch(
+  () => searchQuery.value,
+  async () => {
+    if (pagination?.page !== 1) pagination.page = 1
+    await load()
+  },
+)
+
+watch(
+  () => pagination?.page,
+  async (n, o) => {
+    if (n === o) return
+    coercePaginationNumbers()
+    await load()
+  },
+)
+
+/* =========================
+   HutangDagang tampil (UX)
+========================= */
 const hutangDagangComputed = computed(() => {
   const pembelian = Number(form.persediaan_barang) || 0
   const biayaAngkut = Number(form.biaya_angkut) || 0
@@ -322,11 +469,9 @@ const hutangDagangComputed = computed(() => {
 })
 const formattedHutangDagang = computed(() => formatRupiah(hutangDagangComputed.value))
 
-function goToPrintPage() {
-  router.push('/pembelian/cetak')
-}
-
-// (opsional) expose ke template
+/* =========================
+   Expose (opsional)
+========================= */
 defineExpose({
   formatTanggalIndonesia,
   formatRupiah,
@@ -338,6 +483,7 @@ defineExpose({
   formattedFields,
   formattedHutangDagang,
   pembelianList,
+  pagedItems,
   formDialog,
   form,
   pagination,
@@ -347,5 +493,6 @@ defineExpose({
   sort,
   goToPrintPage,
   isOffline,
+  maxPages,
 })
 </script>
