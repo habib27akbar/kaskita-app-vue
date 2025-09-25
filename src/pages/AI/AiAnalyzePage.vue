@@ -509,25 +509,29 @@ const LineCompare = defineComponent({
   name: 'LineCompare',
   props: {
     labels: Array,
-    seriesA: Array, // histori (biru)
-    seriesB: Array, // forecast (merah dashed)
-    seriesC: Array, // fitted/in-sample (oranye)  ← NEW
+    seriesA: Array,
+    seriesB: Array,
+    seriesC: Array, // fitted
     width: { type: Number, default: 900 },
     height: { type: Number, default: 340 },
     pad: { type: Number, default: 56 },
     labelA: { type: String, default: 'Seri A' },
     labelB: { type: String, default: 'Seri B' },
-    labelC: { type: String, default: 'Seri C (fit)' }, // ← NEW
+    labelC: { type: String, default: 'Seri C (fit)' },
     yLabel: { type: String, default: 'Nilai' },
     title: { type: String, default: '' },
     valueFormatter: { type: Function, default: (v) => String(v) },
-    xFormatter: { type: Function, default: (s) => s },
+    xFormatter: { type: Function, default: (s) => s }, // untuk axis
+    labelFormatter: { type: Function, default: (s) => s }, // untuk notif/tooltip
   },
   setup(p) {
+    const $q = useQuasar() // ⟵ inisialisasi Quasar notify
+
     const root = ref(null),
       W = ref(p.width),
       H = ref(p.height),
       isXS = ref(false)
+
     onMounted(() => {
       const ro = new ResizeObserver(([entry]) => {
         const w = Math.max(280, Math.floor(entry.contentRect.width))
@@ -541,7 +545,6 @@ const LineCompare = defineComponent({
     const take = (arr) =>
       (arr || []).filter((v) => v !== null && v !== undefined && Number.isFinite(+v)).map(Number)
 
-    // --- skala termasuk C ---
     const values = computed(() => [
       ...take(p.seriesA),
       ...take(p.seriesB),
@@ -577,7 +580,6 @@ const LineCompare = defineComponent({
       return d
     }
 
-    // ticks
     const nX = computed(() =>
       Math.max(p.labels.length, p.seriesA.length, p.seriesB.length, (p.seriesC || []).length),
     )
@@ -608,25 +610,38 @@ const LineCompare = defineComponent({
     }
     const pointsA = computed(() => pts(p.seriesA))
     const pointsB = computed(() => pts(p.seriesB))
-    const pointsC = computed(() => pts(p.seriesC || [])) // ← NEW
+    const pointsC = computed(() => pts(p.seriesC || []))
 
-    // tooltip
+    // Tooltip & Notify — disamakan dengan LineAnomaly style
     const tip = ref({ show: false, left: 0, top: 0, label: '', value: '' })
-    const setTip = (evt, label, val) => {
+    const setTip = (evt, pt) => {
       const rect = root.value?.getBoundingClientRect()
+      const cx =
+        evt?.clientX ?? evt?.touches?.[0]?.clientX ?? evt?.changedTouches?.[0]?.clientX ?? 0
+      const cy =
+        evt?.clientY ?? evt?.touches?.[0]?.clientY ?? evt?.changedTouches?.[0]?.clientY ?? 0
+      const raw = p.labels?.[pt.i] ?? `#${pt.i + 1}`
       tip.value = {
         show: true,
-        left: (evt.clientX ?? evt.touches?.[0]?.clientX) - (rect?.left ?? 0) + 10,
-        top: (evt.clientY ?? evt.touches?.[0]?.clientY) - (rect?.top ?? 0) + 10,
-        label,
-        value: p.valueFormatter(val),
+        left: cx - (rect?.left ?? 0) + 10,
+        top: cy - (rect?.top ?? 0) + 10,
+        label: p.labelFormatter(raw),
+        value: p.valueFormatter(pt.v),
       }
     }
     const hideTip = () => (tip.value.show = false)
 
-    const colA = '#1976D2', // biru
-      colB = '#E53935', // merah (forecast)
-      colC = '#FB8C00', // oranye (fitted)  ← NEW
+    const notify = (pt) => {
+      const raw = p.labels?.[pt.i] ?? `#${pt.i + 1}`
+      $q.notify({
+        color: 'primary',
+        message: `${p.labelFormatter(raw)} • ${p.valueFormatter(pt.v)}`,
+      })
+    }
+
+    const colA = '#1976D2',
+      colB = '#E53935',
+      colC = '#FB8C00',
       grid = '#ECEFF1',
       axis = '#B0BEC5'
     const kompact = new Intl.NumberFormat('id-ID', {
@@ -666,7 +681,7 @@ const LineCompare = defineComponent({
           'svg',
           { viewBox: `0 0 ${W.value} ${H.value}`, width: '100%', height: H.value, role: 'img' },
           [
-            // label Y, grid, ticks … (tidak berubah)
+            // frame
             h('rect', {
               x: pad.value,
               y: H.value - pad.value - innerH.value,
@@ -677,6 +692,8 @@ const LineCompare = defineComponent({
               'stroke-width': 1,
               rx: 8,
             }),
+
+            // y grid + ticks
             ...yTicks.value.map((t) =>
               h('g', {}, [
                 h('line', {
@@ -699,10 +716,13 @@ const LineCompare = defineComponent({
                 ),
               ]),
             ),
+
+            // x ticks (label axis pakai xFormatter)
             ...xTicks.value.map((i) => {
               const n = nX.value,
-                X = x(i, n),
-                lbl = p.labels?.[i] ?? `#${i + 1}`
+                X = x(i, n)
+              const lbl = p.labels?.[i] ?? `#${i + 1}`
+              const ty = H.value - pad.value + (isXS.value ? 16 : 20)
               return h('g', {}, [
                 h('line', {
                   x1: X,
@@ -715,8 +735,8 @@ const LineCompare = defineComponent({
                   'text',
                   {
                     x: X,
-                    y: H.value - pad.value + (isXS.value ? 16 : 20),
-                    transform: `rotate(${isXS.value ? 35 : 45} ${X} ${H.value - pad.value + (isXS.value ? 16 : 20)})`,
+                    y: ty,
+                    transform: `rotate(${isXS.value ? 35 : 45} ${X} ${ty})`,
                     'text-anchor': 'start',
                     'font-size': isXS.value ? 9 : 10,
                     fill: '#546E7A',
@@ -726,7 +746,7 @@ const LineCompare = defineComponent({
               ])
             }),
 
-            // --- Garis FITTED (C) dulu, tipis & semi-transparent ---
+            // path C (fitted)
             p.seriesC && take(p.seriesC).length
               ? h('path', {
                   d: pathFor(p.seriesC),
@@ -738,6 +758,8 @@ const LineCompare = defineComponent({
                   opacity: 0.9,
                 })
               : null,
+
+            // points C
             ...(pointsC.value || []).map((pt) =>
               h('circle', {
                 cx: pt.cx,
@@ -746,15 +768,18 @@ const LineCompare = defineComponent({
                 fill: '#fff',
                 stroke: colC,
                 'stroke-width': 2,
-                onMouseenter: (e) =>
-                  setTip(e, p.xFormatter(p.labels?.[pt.i] ?? `#${pt.i + 1}`), pt.v),
-                onMousemove: (e) =>
-                  setTip(e, p.xFormatter(p.labels?.[pt.i] ?? `#${pt.i + 1}`), pt.v),
+                onMouseenter: (e) => setTip(e, pt),
+                onMousemove: (e) => setTip(e, pt),
                 onMouseleave: hideTip,
+                onTouchstart: (e) => setTip(e, pt),
+                onTouchmove: (e) => setTip(e, pt),
+                onTouchend: hideTip,
+                onClick: () => notify(pt),
+                style: 'cursor:pointer',
               }),
             ),
 
-            // --- Garis HISTORIS (A) ---
+            // path A (historis)
             h('path', {
               d: pathFor(p.seriesA),
               fill: 'none',
@@ -763,6 +788,8 @@ const LineCompare = defineComponent({
               'stroke-linecap': 'round',
               'stroke-linejoin': 'round',
             }),
+
+            // points A
             ...pointsA.value.map((pt) =>
               h('circle', {
                 cx: pt.cx,
@@ -771,15 +798,18 @@ const LineCompare = defineComponent({
                 fill: colA,
                 stroke: '#fff',
                 'stroke-width': 1.2,
-                onMouseenter: (e) =>
-                  setTip(e, p.xFormatter(p.labels?.[pt.i] ?? `#${pt.i + 1}`), pt.v),
-                onMousemove: (e) =>
-                  setTip(e, p.xFormatter(p.labels?.[pt.i] ?? `#${pt.i + 1}`), pt.v),
+                onMouseenter: (e) => setTip(e, pt),
+                onMousemove: (e) => setTip(e, pt),
                 onMouseleave: hideTip,
+                onTouchstart: (e) => setTip(e, pt),
+                onTouchmove: (e) => setTip(e, pt),
+                onTouchend: hideTip,
+                onClick: () => notify(pt),
+                style: 'cursor:pointer',
               }),
             ),
 
-            // --- Garis FORECAST (B) ---
+            // path B (forecast)
             h('path', {
               d: pathFor(p.seriesB),
               fill: 'none',
@@ -789,6 +819,8 @@ const LineCompare = defineComponent({
               'stroke-linecap': 'round',
               'stroke-linejoin': 'round',
             }),
+
+            // points B
             ...pointsB.value.map((pt) =>
               h('circle', {
                 cx: pt.cx,
@@ -797,17 +829,20 @@ const LineCompare = defineComponent({
                 fill: '#fff',
                 stroke: colB,
                 'stroke-width': 2,
-                onMouseenter: (e) =>
-                  setTip(e, p.xFormatter(p.labels?.[pt.i] ?? `#${pt.i + 1}`), pt.v),
-                onMousemove: (e) =>
-                  setTip(e, p.xFormatter(p.labels?.[pt.i] ?? `#${pt.i + 1}`), pt.v),
+                onMouseenter: (e) => setTip(e, pt),
+                onMousemove: (e) => setTip(e, pt),
                 onMouseleave: hideTip,
+                onTouchstart: (e) => setTip(e, pt),
+                onTouchmove: (e) => setTip(e, pt),
+                onTouchend: hideTip,
+                onClick: () => notify(pt),
+                style: 'cursor:pointer',
               }),
             ),
           ],
         ),
 
-        // Legend (tambah item C kalau ada data)
+        // Legend
         h('div', { class: ['legend-card', isXS.value ? 'legend-bottom' : 'legend-top-left'] }, [
           legendItem(p.labelA, colA, false),
           legendItem(p.labelB, colB, true),
@@ -816,6 +851,7 @@ const LineCompare = defineComponent({
             : null,
         ]),
 
+        // Tooltip
         tip.value.show
           ? h(
               'div',
