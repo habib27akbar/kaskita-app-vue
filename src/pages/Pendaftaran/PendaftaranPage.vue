@@ -22,12 +22,14 @@
                   :rules="[req('Nama')]"
                 />
 
-                <q-input
+                <q-select
                   v-model="form.profesi"
+                  :options="optProfesi"
                   label="Profesi/Pekerjaan"
                   outlined
                   dense
                   hide-bottom-space
+                  clearable
                   :rules="[req('Profesi/Pekerjaan')]"
                 />
 
@@ -60,6 +62,17 @@
                   dense
                   hide-bottom-space
                   :rules="[req('Nama Usaha')]"
+                />
+
+                <q-select
+                  v-model="form.jenis_usaha"
+                  :options="optJenisUsaha"
+                  label="Jenis Usaha"
+                  outlined
+                  dense
+                  hide-bottom-space
+                  clearable
+                  :rules="[req('Jenis Usaha')]"
                 />
 
                 <q-input v-model="form.instagram" label="Instagram" outlined dense />
@@ -158,13 +171,15 @@ axios.defaults.baseURL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:
 const $q = useQuasar()
 const formRef = ref(null)
 const loading = ref(false)
-
+const optProfesi = ['Wirausaha', 'Mahasiswa/Siswa', 'Karyawan', 'Ibu Rumah Tangga', 'Lainnya']
+const optJenisUsaha = ['Kuliner', 'Fashion', 'Craft', 'Jasa']
 const initialForm = {
   nama: '',
   profesi: '',
   alamat: '',
   hp: '',
   namaUsaha: '',
+  jenis_usaha: '',
   instagram: '',
   facebook: '',
   website: '',
@@ -221,6 +236,7 @@ const onSubmit = async () => {
     email: form.value.email,
     nama: form.value.nama,
     nama_usaha: form.value.namaUsaha || null,
+    jenis_usaha: form.value.jenis_usaha || null,
     profesi_pekerjaan: form.value.profesi || null,
     alamat: form.value.alamat || null,
     no_hp: form.value.hp,

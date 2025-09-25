@@ -21,12 +21,14 @@
                   :rules="[req('Nama')]"
                 />
 
-                <q-input
+                <q-select
                   v-model="form.profesi"
+                  :options="optProfesi"
                   label="Profesi/Pekerjaan"
                   outlined
                   dense
                   hide-bottom-space
+                  clearable
                   :rules="[req('Profesi/Pekerjaan')]"
                 />
 
@@ -59,6 +61,17 @@
                   dense
                   hide-bottom-space
                   :rules="[req('Nama Usaha')]"
+                />
+
+                <q-select
+                  v-model="form.jenis_usaha"
+                  :options="optJenisUsaha"
+                  label="Jenis Usaha"
+                  outlined
+                  dense
+                  hide-bottom-space
+                  clearable
+                  :rules="[req('Jenis Usaha')]"
                 />
 
                 <q-input v-model="form.instagram" label="Instagram" outlined dense />
@@ -142,7 +155,8 @@ const $q = useQuasar()
 const formRef = ref(null)
 const loading = ref(false)
 const fetching = ref(false) // <-- loading awal fetch
-
+const optProfesi = ['Wirausaha', 'Mahasiswa/Siswa', 'Karyawan', 'Ibu Rumah Tangga', 'Lainnya']
+const optJenisUsaha = ['Kuliner', 'Fashion', 'Craft', 'Jasa']
 // Ambil email dari auth storage kamu
 const userEmail = JSON.parse(localStorage.getItem('auth_user'))?.user?.email || ''
 
@@ -152,6 +166,7 @@ const initialForm = {
   alamat: '',
   hp: '',
   namaUsaha: '',
+  jenis_usaha: '',
   instagram: '',
   facebook: '',
   website: '',
@@ -197,6 +212,7 @@ async function loadProfile() {
     form.value.alamat = src?.alamat || ''
     form.value.hp = src?.no_hp || ''
     form.value.namaUsaha = src?.nama_usaha || ''
+    form.value.jenis_usaha = src?.jenis_usaha || ''
     form.value.instagram = src?.instagram || ''
     form.value.facebook = src?.facebook || ''
     form.value.website = src?.website || ''
@@ -221,6 +237,7 @@ const onSubmit = async () => {
   const payload = {
     nama: form.value.nama,
     nama_usaha: form.value.namaUsaha || null,
+    jenis_usaha: form.value.jenis_usaha || null,
     profesi_pekerjaan: form.value.profesi || null,
     alamat: form.value.alamat || null,
     no_hp: form.value.hp,
