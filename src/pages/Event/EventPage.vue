@@ -11,7 +11,7 @@
         <q-item v-for="item in berita" :key="item.id">
           <q-item-section avatar>
             <q-img
-              :src="`https://mykaskita.com/public/img/${item.gambar}`"
+              :src="`https://mykaskita.com/webadmin/public/img/${item.gambar}`"
               style="width: 80px; height: 80px; object-fit: cover"
             />
           </q-item-section>

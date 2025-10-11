@@ -70,7 +70,7 @@
         <q-separator />
         <q-card-section>
           <q-img
-            :src="`https://mykaskita.com/public/img/${detail.gambar}`"
+            :src="`https://mykaskita.com/webadmin/public/img/${detail.gambar}`"
             style="max-height: 300px; object-fit: cover"
             class="q-mb-md"
           />
