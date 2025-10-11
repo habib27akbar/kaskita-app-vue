@@ -263,7 +263,7 @@ async function analyze() {
         months: Math.max(1, Number(form.value.months || 12)),
         horizon: Math.max(1, Number(form.value.horizon || 3)),
       }),
-      signal: AbortSignal.timeout(25000),
+      signal: AbortSignal.timeout(250000),
     })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const json = await res.json()
