@@ -108,6 +108,7 @@ const exportToExcel = () => {
       'Nama Akun Kredit': row.nama_coa_kredit,
       'Nama Akun Debet': row.nama_coa_debet,
       Kredit: row.kredit,
+      Debet: row.debet,
     })),
   )
 
@@ -147,18 +148,21 @@ function exportToPDF() {
         { content: 'Nama Akun Debet' },
 
         { content: 'Kredit', styles: { halign: 'center' } },
+        { content: 'Debet', styles: { halign: 'center' } },
       ],
     ],
     body: filteredData.value.map((row) => [
       formatTanggal(row.tanggal_kredit),
       row.nama_coa_kredit,
       row.nama_coa_debet,
+      formatNumber(row.debet),
       formatNumber(row.kredit),
     ]),
     styles: { fontSize: 10 },
     theme: 'grid',
     columnStyles: {
       3: { halign: 'right' }, // index 3 = kolom Debit
+      4: { halign: 'right' }, // index 3 = kolom Debit
     },
   })
 
