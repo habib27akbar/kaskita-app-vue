@@ -208,18 +208,71 @@ function exportExcel() {
   XLSX.writeFile(wb, `Laporan-LabaRugi-${bulan.value}.xlsx`)
 }
 
-// 💡 Hitung Net Profit = (revenues + other revenues) - (expenses + other losses)
-const totalRevenues = computed(() => {
+function totalByHeaderId(id) {
   return headers.value
-    .filter((h) => [6, 8].includes(h.id))
+    .filter((h) => Number(h.id) === id)
     .reduce((sum, h) => sum + totalSaldo(h.masterCoaAll), 0)
+}
+
+const totalRevenue = computed(() => totalByHeaderId(6))
+
+const totalOtherRevenue = computed(() => totalByHeaderId(8))
+
+const totalExpenses = computed(() => totalByHeaderId(7))
+
+const totalOtherLosses = computed(() => totalByHeaderId(9))
+
+const totalPembelian = computed(() => totalByHeaderId(0))
+
+const netProfit = computed(() => {
+  return (
+    totalRevenue.value +
+    totalOtherRevenue.value -
+    totalPembelian.value -
+    totalExpenses.value -
+    totalOtherLosses.value
+  )
 })
-const totalExpenses = computed(() => {
-  return headers.value
-    .filter((h) => [7, 9].includes(h.id))
-    .reduce((sum, h) => sum + totalSaldo(h.masterCoaAll), 0)
-})
-const netProfit = computed(() => totalRevenues.value - totalExpenses.value)
+
+// const totalRevenue = computed(() => {
+//   return headers.value
+//     .filter((h) => h.id === 6)
+//     .reduce((sum, h) => sum + totalSaldo(h.masterCoaAll), 0)
+// })
+
+// const totalOtherRevenue = computed(() => {
+//   return headers.value
+//     .filter((h) => h.id === 8)
+//     .reduce((sum, h) => sum + totalSaldo(h.masterCoaAll), 0)
+// })
+
+// const totalExpenses = computed(() => {
+//   return headers.value
+//     .filter((h) => h.id === 7)
+//     .reduce((sum, h) => sum + totalSaldo(h.masterCoaAll), 0)
+// })
+
+// const totalOtherLosses = computed(() => {
+//   return headers.value
+//     .filter((h) => h.id === 9)
+//     .reduce((sum, h) => sum + totalSaldo(h.masterCoaAll), 0)
+// })
+
+// const totalPembelian = computed(() => {
+//   return headers.value
+//     .filter((h) => h.id === 0)
+//     .reduce((sum, h) => sum + totalSaldo(h.masterCoaAll), 0)
+// })
+
+// const netProfit = computed(() => {
+//   const rev = Math.abs(totalRevenue.value)
+//   const otherRev = Math.abs(totalOtherRevenue.value)
+//   const exp = Math.abs(totalExpenses.value)
+//   const otherLoss = Math.abs(totalOtherLosses.value)
+//   const pur = Math.abs(totalPembelian.value)
+
+//   return rev + otherRev + pur - exp - otherLoss
+// })
 
 const userEmail = JSON.parse(localStorage.getItem('auth_user'))?.user?.email || ''
 function totalDebet(rows) {
@@ -231,27 +284,58 @@ function totalKredit(rows) {
 function totalSaldo(rows) {
   return rows.reduce((s, r) => s + (parseFloat(r.saldo) || 0), 0)
 }
-function formatRupiah(value) {
-  if (!value) return 'Rp 0'
-  return new Intl.NumberFormat('id-ID', {
-    style: 'currency',
-    currency: 'IDR',
-    minimumFractionDigits: 0,
-  }).format(value)
-}
 
+// function formatRupiah(value) {
+//   const num = Number(value) || 0
+
+//   return new Intl.NumberFormat('id-ID', {
+//     style: 'currency',
+//     currency: 'IDR',
+//     minimumFractionDigits: 0,
+//   }).format(Math.abs(num)) // <-- hilangkan minus di tampilan
+// }
+function formatRupiah(value) {
+  const num = Number(value) || 0
+  const sign = num < 0 ? '-' : ''
+
+  return (
+    sign +
+    new Intl.NumberFormat('id-ID', {
+      style: 'currency',
+      currency: 'IDR',
+      minimumFractionDigits: 0,
+    }).format(Math.abs(num))
+  )
+}
+const REVENUE_HEADERS = [6, 8] // Revenues, Other Revenues
+
+function hitungSaldo(headerId, row) {
+  const debet = parseFloat(row.debet) || 0
+  const kredit = parseFloat(row.kredit) || 0
+
+  // Revenue normal balance = Kredit - Debet
+  if (REVENUE_HEADERS.includes(Number(headerId))) {
+    return kredit - debet
+  }
+
+  // Pembelian, Expenses, Other Losses = Debet - Kredit
+  return debet - kredit
+}
 // Ambil data dari API
 async function fetchData() {
   try {
     const res = await axios.get(`${API_URL}/laporan/laba-rugi`, {
       params: { bulan: bulan.value, email: userEmail },
     })
+
     headers.value = res.data.data.map((h) => {
       const masterCoaAll = h.masterCoa.map((c) => ({
         ...c,
-        saldo: (parseFloat(c.debet) || 0) - (parseFloat(c.kredit) || 0),
+        saldo: hitungSaldo(h.id, c),
       }))
-      const masterCoaFiltered = masterCoaAll.filter((c) => c.saldo !== 0)
+
+      const masterCoaFiltered = masterCoaAll.filter((c) => Number(c.saldo) !== 0)
+
       return { ...h, masterCoaAll, masterCoaFiltered }
     })
   } catch (err) {

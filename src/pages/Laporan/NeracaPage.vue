@@ -65,6 +65,7 @@
 
               <!-- 👇 Tambah total di bawah tabel -->
               <template v-slot:bottom-row>
+                <!-- Baris Total header (Assets / Liabilities / Equity dll) -->
                 <q-tr class="bg-grey-2 text-weight-bold">
                   <q-td colspan="1" class="text-right"> Total {{ header.nama_header }} </q-td>
                   <q-td class="text-right">
@@ -75,6 +76,15 @@
                   </q-td>
                   <q-td class="text-right">
                     {{ formatRupiah(totalSaldo(header.masterCoaFiltered)) }}
+                  </q-td>
+                </q-tr>
+
+                <!-- Baris Net Profit, muncul hanya di header Equity (id = 5) -->
+                <q-tr v-if="header.id === 5" class="bg-grey-1 text-weight-bold">
+                  <!-- Gabungkan 3 kolom pertama, nilai ada di kolom Saldo -->
+                  <q-td colspan="3" class="text-right"> Net Profit </q-td>
+                  <q-td class="text-right">
+                    {{ formatRupiah(netProfit) }}
                   </q-td>
                 </q-tr>
               </template>
@@ -117,7 +127,7 @@ import * as XLSX from 'xlsx'
 
 const headers = ref([])
 const bulan = ref(new Date().toISOString().slice(0, 7)) // default bulan ini
-
+const netProfit = ref(0)
 const columns = [
   { name: 'nama_akun_ind', label: 'Nama Akun', field: 'nama_akun_ind', align: 'left' },
   { name: 'debet', label: 'Debet', field: 'debet', align: 'right' },
@@ -245,16 +255,51 @@ function exportExcel() {
   XLSX.writeFile(wb, `Laporan-Neraca-${bulan.value}.xlsx`)
 }
 
+// const totalAssets = computed(() => {
+//   return headers.value
+//     .filter((h) => h.id === 1) // hanya Current assets
+//     .reduce((sum, h) => sum + totalSaldo(h.masterCoaAll), 0)
+// })
+
+// const totalCurrentAssets = computed(() => {
+//   return headers.value
+//     .filter((h) => h.id === 2) // hanya Current assets
+//     .reduce((sum, h) => sum + totalSaldo(h.masterCoaAll), 0)
+// })
+
+// const totalLiabilities = computed(() => {
+//   return headers.value
+//     .filter((h) => [2, 3, 4, 5].includes(h.id)) // Fixed assets + Liabilities + Equity
+//     .reduce((sum, h) => sum + totalSaldo(h.masterCoaAll), 0)
+// })
+
+// 🔹 Asset tetap / non-current
+const totalFixedAssets = computed(() => {
+  return totalByHeaderId(1)
+})
+
+const totalCurrentAssets = computed(() => {
+  return totalByHeaderId(2)
+})
+
 const totalAssets = computed(() => {
-  return headers.value
-    .filter((h) => h.id === 1) // hanya Current assets
-    .reduce((sum, h) => sum + totalSaldo(h.masterCoaAll), 0)
+  return totalFixedAssets.value + totalCurrentAssets.value
+})
+
+const totalCurrentLiabilities = computed(() => {
+  return totalByHeaderIds([3, 4])
+})
+
+const totalOwnerEquity = computed(() => {
+  return totalByHeaderId(5)
+})
+
+const totalPrive = computed(() => {
+  return totalByHeaderId(10)
 })
 
 const totalLiabilities = computed(() => {
-  return headers.value
-    .filter((h) => [2, 3, 4, 5].includes(h.id)) // Fixed assets + Liabilities + Equity
-    .reduce((sum, h) => sum + totalSaldo(h.masterCoaAll), 0)
+  return totalCurrentLiabilities.value + totalOwnerEquity.value + netProfit.value - totalPrive.value
 })
 
 const userEmail = JSON.parse(localStorage.getItem('auth_user'))?.user?.email || ''
@@ -267,34 +312,99 @@ function totalKredit(rows) {
 function totalSaldo(rows) {
   return rows.reduce((sum, r) => sum + (parseFloat(r.saldo) || 0), 0)
 }
+
 function formatRupiah(value) {
-  if (!value) return 'Rp 0'
-  return new Intl.NumberFormat('id-ID', {
-    style: 'currency',
-    currency: 'IDR',
-    minimumFractionDigits: 0,
-  }).format(value)
+  const num = Number(value) || 0
+  const sign = num < 0 ? '-' : ''
+
+  return (
+    sign +
+    new Intl.NumberFormat('id-ID', {
+      style: 'currency',
+      currency: 'IDR',
+      minimumFractionDigits: 0,
+    }).format(Math.abs(num))
+  )
+}
+
+const ASSET_HEADERS = [1, 2] // Fixed Assets, Current Assets
+const LIABILITY_EQUITY_HEADERS = [3, 4, 5] // Liabilities, Equity
+const REVENUE_HEADERS = [6, 8] // Revenue, Other Revenue
+
+function hitungSaldoNeraca(headerId, row) {
+  const id = Number(headerId)
+  const debet = parseFloat(row.debet) || 0
+  const kredit = parseFloat(row.kredit) || 0
+
+  // Assets normal balance = Debet - Kredit
+  if (ASSET_HEADERS.includes(id)) {
+    return debet - kredit
+  }
+
+  // Liabilities & Equity normal balance = Kredit - Debet
+  if (LIABILITY_EQUITY_HEADERS.includes(id)) {
+    return kredit - debet
+  }
+
+  // Prive normal balance = Debet - Kredit
+  if (id === 10) {
+    return debet - kredit
+  }
+
+  return debet - kredit
+}
+
+function hitungSaldoLabaRugi(headerId, row) {
+  const id = Number(headerId)
+  const debet = parseFloat(row.debet) || 0
+  const kredit = parseFloat(row.kredit) || 0
+
+  // Revenue normal balance = Kredit - Debet
+  if (REVENUE_HEADERS.includes(id)) {
+    return kredit - debet
+  }
+
+  // Pembelian, Expenses, Other Losses = Debet - Kredit
+  return debet - kredit
+}
+
+function totalByHeaderId(id) {
+  return headers.value
+    .filter((h) => Number(h.id) === id)
+    .reduce((sum, h) => sum + totalSaldo(h.masterCoaAll), 0)
+}
+
+function totalByHeaderIds(ids) {
+  return headers.value
+    .filter((h) => ids.includes(Number(h.id)))
+    .reduce((sum, h) => sum + totalSaldo(h.masterCoaAll), 0)
 }
 
 async function fetchData() {
   try {
-    const res = await axios.get(`${API_URL}/laporan/neraca`, {
-      params: {
-        bulan: bulan.value,
-        email: userEmail,
-      },
-    })
-    headers.value = res.data.data.map((h) => {
+    const [neracaRes, labaRugiRes] = await Promise.all([
+      axios.get(`${API_URL}/laporan/neraca`, {
+        params: {
+          bulan: bulan.value,
+          email: userEmail,
+        },
+      }),
+      axios.get(`${API_URL}/laporan/laba-rugi`, {
+        params: {
+          bulan: bulan.value,
+          email: userEmail,
+        },
+      }),
+    ])
+
+    // Proses data NERACA
+    headers.value = neracaRes.data.data.map((h) => {
       const masterCoaAll = h.masterCoa.map((c) => ({
         ...c,
-        saldo: (parseFloat(c.debet) || 0) - (parseFloat(c.kredit) || 0),
+        saldo: hitungSaldoNeraca(h.id, c),
       }))
-      const masterCoaFiltered = h.masterCoa
-        .map((c) => ({
-          ...c,
-          saldo: (parseFloat(c.debet) || 0) - (parseFloat(c.kredit) || 0),
-        }))
-        .filter((c) => c.saldo !== 0)
+
+      const masterCoaFiltered = masterCoaAll.filter((c) => Number(c.saldo) !== 0)
 
       return {
         ...h,
@@ -302,7 +412,41 @@ async function fetchData() {
         masterCoaFiltered,
       }
     })
-    //console.log(res)
+
+    // Proses data LABA RUGI untuk hitung net profit
+    const labaHeaders = labaRugiRes.data.data.map((h) => {
+      const masterCoaAll = h.masterCoa.map((c) => ({
+        ...c,
+        saldo: hitungSaldoLabaRugi(h.id, c),
+      }))
+
+      return {
+        ...h,
+        masterCoaAll,
+      }
+    })
+
+    const totalSaldoLocal = (rows) => {
+      return rows.reduce((s, r) => s + (parseFloat(r.saldo) || 0), 0)
+    }
+
+    const sumLabaRugiByHeaderIds = (ids) => {
+      return labaHeaders
+        .filter((h) => ids.includes(Number(h.id)))
+        .reduce((sum, h) => sum + totalSaldoLocal(h.masterCoaAll), 0)
+    }
+
+    const rev = sumLabaRugiByHeaderIds([6])
+    const otherRev = sumLabaRugiByHeaderIds([8])
+    const exp = sumLabaRugiByHeaderIds([7])
+    const otherLoss = sumLabaRugiByHeaderIds([9])
+    const pur = sumLabaRugiByHeaderIds([0])
+
+    netProfit.value = rev + otherRev - pur - exp - otherLoss
+
+    console.log('Total Assets:', totalAssets.value)
+    console.log('Total Liabilities & Equity:', totalLiabilities.value)
+    console.log('Net Profit:', netProfit.value)
   } catch (err) {
     console.error('Gagal fetch API:', err)
   }
